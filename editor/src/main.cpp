@@ -1,30 +1,21 @@
-// MicroBASIC-PaperS3 -- milestones 1-3: hardware bring-up, SCREEN font
-// legibility, on-screen keyboard.
+// MicroBASIC-PaperS3 -- milestones 1-4: hardware bring-up, SCREEN fonts,
+// on-screen keyboard, screen editor + BASIC interpreter.
 //
-// Milestone 1 (display, GT911 touch, SD card, 4-corner tap mapping) and
-// milestone 2 (SCREEN fonts, confirmed legible after fixing a row-packing
-// bug in the font emitter) are done -- see the project README and git log.
+// Milestones 1-3 are done and confirmed on real hardware -- see the project
+// README and git log. This build ports the real screen editor
+// (screen_editor.cpp), the input/dead-key/line-editing logic
+// (input_handler.cpp) and the BASIC interpreter bridge (tb_bridge.cpp,
+// tb_runtime.cpp, editor/lib/TinyBasic) from MicroBASIC's own
+// port-staging/, replacing the typing-echo demo the on-screen keyboard was
+// previously wired to. The OSK's callback now feeds the real
+// enqueueKeyEvent() instead of a standalone demo buffer -- exactly the
+// swap osk.h's own top comment anticipated from the start.
 //
-// Landscape, not portrait: the first portrait build (540 wide) worked but
-// felt cramped on real hardware -- both the terminal glyphs and the
-// keyboard keys read as too small. Landscape (960x540, matching the panel's
-// native rotation=0 orientation -- GfxRenderer::LandscapeCounterClockwise is
-// documented as exactly that, no further rotation on top) uses the full
-// panel width for both. The terminal's 64x18 grid at cell 15x30 divides
-// BOTH panel axes exactly (960/15=64, 540/30=18) with zero margin anywhere.
-//
-// The on-screen keyboard is no longer a permanently docked strip: with the
-// terminal now claiming the whole panel, the keyboard is a toggleable
-// OVERLAY covering the bottom 10 terminal rows when shown (see the "KBD"
-// button, top-right). This matches the intended real policy -- a paired
-// BLE keyboard is preferred, and the on-screen keyboard is a reserve you
-// summon only when you need it -- though nothing here actually detects a
-// BLE keyboard yet (ble_keyboard.cpp isn't ported); the toggle demonstrates
-// the show/hide mechanism the real policy will drive later.
-//
-// osk.cpp itself is unchanged from the portrait build: it takes its region
-// as plain parameters, so widening it to the full 960px and repositioning
-// it as an overlay was a call-site change only, not a component change.
+// Not ported yet, and deliberately out of scope for this pass: the main
+// menu, file browser, prose text editor, BLE keyboard host, WiFi sync. This
+// device currently boots straight into the screen editor with no menu to
+// return to -- see input_handler.cpp's TODO comments for exactly what's
+// stubbed and why.
 
 #include <Arduino.h>
 #include <FontCacheManager.h>
@@ -40,10 +31,16 @@
 #include <builtinFonts/notosans_14_regular.h>
 #include <builtinFonts/notosans_16_bold.h>
 #include <builtinFonts/ubuntu_10_regular.h>
+#include <builtinFonts/unscii_30x60.h>
+#include <builtinFonts/unscii_20x40.h>
 #include <builtinFonts/unscii_15x30.h>
+#include <builtinFonts/unscii_12x24.h>
 
-#include "dead_keys.h"
+#include "config.h"
+#include "input_handler.h"
 #include "osk.h"
+#include "screen_editor.h"
+#include "tb_bridge.h"
 
 // Logging.h (pulled in transitively by the hal headers) redefines Serial as a
 // proxy whose methods this build does not link. The bring-up wants the plain
@@ -59,50 +56,24 @@
 #include <cstdio>
 #include <cstring>
 
-// --- decided layout (see the header comment) -------------------------------
+// --- panel geometry ----------------------------------------------------
 static constexpr int PANEL_W = 960;  // logical, landscape (native panel orientation)
 static constexpr int PANEL_H = 540;
-static constexpr int TERM_COLS = 64;
-static constexpr int TERM_ROWS = 18;
-static constexpr int CELL_W = 15;
-static constexpr int CELL_H = 30;
-static constexpr int TERM_W = TERM_COLS * CELL_W;  // 960 -- exactly PANEL_W
-static constexpr int TERM_H = TERM_ROWS * CELL_H;  // 540 -- exactly PANEL_H
-static constexpr int TERM_X = 0;
-static constexpr int TERM_Y = 0;
-
-static_assert(TERM_W == PANEL_W && TERM_H == PANEL_H, "terminal should fill the panel exactly");
 
 // On-screen keyboard overlay: covers the bottom of the screen when shown,
-// full panel width. 300px gives osk.cpp's 5 rows a 60px row height, matching
-// its 60px unit width (960/16 units) for near-square keys; leaves 240px
-// (8 terminal rows) visible above it.
+// full panel width, independent of whatever SCREEN mode/cell size the
+// terminal is currently using -- its own geometry never changes with that.
 static constexpr int OSK_H = 300;
 static constexpr int OSK_Y = PANEL_H - OSK_H;  // 240
 static constexpr int OSK_X = 0;
 static constexpr int OSK_W = PANEL_W;
 
-// Toggle button: top-right, 6 terminal columns wide x 1 row tall.
-static constexpr int TOGGLE_COLS = 6;
-static constexpr int TOGGLE_W = TOGGLE_COLS * CELL_W;  // 90
-static constexpr int TOGGLE_H = CELL_H;                // 30
+// Toggle button: top-right, fixed pixel size (not tied to the terminal's
+// current cell size, unlike an earlier draft).
+static constexpr int TOGGLE_W = 90;
+static constexpr int TOGGLE_H = 30;
 static constexpr int TOGGLE_X = PANEL_W - TOGGLE_W;
 static constexpr int TOGGLE_Y = 0;
-
-static constexpr int FONT_UI = -1559651934;     // notosans 12
-static constexpr int FONT_BODY = -1014561631;   // notosans 14
-static constexpr int FONT_TITLE = -1422711852;  // notosans 16
-static constexpr int FONT_SMALL = -1246724383;  // ubuntu 10 (X4's own UI_10_FONT_ID)
-// Same numeric ID convention (and column counts) the ported config.h used
-// on the X4: MONO_0=32col, MONO_1=48col, MONO_2=64col, MONO_3=80col. All
-// four landscape font assets are generated (research/fonts/tools/
-// emit_epdfont_header.py), but only MONO_2 is registered below -- the X4
-// itself boots into SCREEN_MONO_1 (48col) because that's the readable
-// default at the X4's panel size; this device has enough room that 64col
-// is the better default, so it boots straight into MONO_2. The other
-// three aren't wired into the renderer yet since nothing here can switch
-// SCREEN modes at runtime (no BASIC interpreter in this bring-up).
-static constexpr int FONT_SCREEN_MONO_2 = -2000000003;  // SCREEN 2, 64 col, cell 15x30, default here
 
 // `display` is a global owned by the hal (declared extern in HalDisplay.h,
 // defined in HalDisplay.cpp) -- do not shadow it with a local instance.
@@ -115,7 +86,6 @@ static InputManager input;
 // chrome uses these.
 static FontDecompressor fontDecompressor;
 static FontCacheManager fontCacheManager(renderer.getFontMap(), renderer.getSdCardFonts());
-static SDCardManager sdCard;
 
 static EpdFont uiRegularFont(&notosans_12_regular);
 static EpdFont bodyRegularFont(&notosans_14_regular);
@@ -126,21 +96,33 @@ static EpdFontFamily bodyFamily(&bodyRegularFont);
 static EpdFontFamily titleFamily(&titleBoldFont);
 static EpdFontFamily smallFamily(&smallRegularFont);
 
-// MicroBASIC's own SCREEN font -- uncompressed, no FontDecompressor needed.
+// MicroBASIC's own SCREEN fonts -- uncompressed, no FontDecompressor needed.
+// All four are registered (not just the default) since "SCREEN n" can
+// switch modes at runtime.
+static EpdFont screenMono0Font(&unscii_30x60);
+static EpdFont screenMono1Font(&unscii_20x40);
 static EpdFont screenMono2Font(&unscii_15x30);
+static EpdFont screenMono3Font(&unscii_12x24);
+static EpdFontFamily screenMono0Family(&screenMono0Font);
+static EpdFontFamily screenMono1Family(&screenMono1Font);
 static EpdFontFamily screenMono2Family(&screenMono2Font);
+static EpdFontFamily screenMono3Family(&screenMono3Font);
 
 static char sdLine[96] = "SD: not probed";
 static bool firstPaintDone = false;
 static bool g_oskVisible = false;
 
+// Defined in input_handler.cpp; also written by tb_bridge.cpp/tb_runtime.cpp
+// whenever the interpreter changes what's on screen.
+extern bool screenDirty;
+
 static void probeSdCard() {
-  if (!sdCard.begin()) {
+  if (!SdMan.begin()) {
     snprintf(sdLine, sizeof(sdLine), "SD: begin() FAILED");
     return;
   }
   int files = 0;
-  FsFile dir = sdCard.open("/");
+  FsFile dir = SdMan.open("/");
   if (dir) {
     FsFile entry;
     while (entry.openNext(&dir, O_RDONLY)) {
@@ -152,167 +134,76 @@ static void probeSdCard() {
   snprintf(sdLine, sizeof(sdLine), "SD: mounted, %d entries in /", files);
 }
 
-// --- typing echo buffer -----------------------------------------------
-// Rows 0-1 of the terminal are a fixed banner; rows 2-17 (16 rows) are a
-// live scroll buffer fed by the on-screen keyboard, proving the whole
-// osk.cpp -> HID code -> character -> terminal loop end to end.
-static constexpr int TYPE_ROW0 = 2;
-static constexpr int TYPE_ROWS = TERM_ROWS - TYPE_ROW0;  // 16
-static char g_typed[TYPE_ROWS][TERM_COLS + 1];
-static int g_curRow = 0, g_curCol = 0;
-
-static void typedGridReset() {
-  for (int r = 0; r < TYPE_ROWS; r++) {
-    memset(g_typed[r], ' ', TERM_COLS);
-    g_typed[r][TERM_COLS] = '\0';
-  }
-  g_curRow = 0;
-  g_curCol = 0;
-}
-
-static void typedGridScroll() {
-  for (int r = 0; r < TYPE_ROWS - 1; r++) {
-    memcpy(g_typed[r], g_typed[r + 1], TERM_COLS + 1);
-  }
-  memset(g_typed[TYPE_ROWS - 1], ' ', TERM_COLS);
-  g_typed[TYPE_ROWS - 1][TERM_COLS] = '\0';
-}
-
-static void typedGridNewline() {
-  g_curCol = 0;
-  if (g_curRow + 1 < TYPE_ROWS) {
-    g_curRow++;
-  } else {
-    typedGridScroll();
-  }
-}
-
-static void typedGridBackspace() {
-  if (g_curCol > 0) {
-    g_curCol--;
-    g_typed[g_curRow][g_curCol] = ' ';
-  } else if (g_curRow > 0) {
-    g_curRow--;
-    g_curCol = TERM_COLS - 1;
-    g_typed[g_curRow][g_curCol] = ' ';
-  }
-}
-
-static void typedGridInsert(char c) {
-  if (g_curCol >= TERM_COLS) typedGridNewline();
-  g_typed[g_curRow][g_curCol] = c;
-  g_curCol++;
-}
-
-// dead_keys.h's composed results are UTF-8 (1-3 bytes), but g_typed stores
-// one byte per cell -- matching screen_editor.h's own documented convention
-// ("characters come out as Latin-1 bytes, the same one-byte-per-character
-// encoding BASIC strings use throughout"), not UTF-8. Every result this
-// table produces is either plain ASCII (the literal-dead-key entries) or a
-// 2-byte UTF-8 sequence for a Latin-1 Supplement codepoint (0xC2/0xC3 lead
-// byte), so this decode is exact for everything dead_keys.h can return --
-// it is NOT a general UTF-8 decoder.
-static uint8_t latin1FromUtf8(const char* s) {
-  const uint8_t b0 = (uint8_t)s[0];
-  if (b0 < 0x80) return b0;
-  const uint8_t b1 = (uint8_t)s[1];
-  return (uint8_t)(((b0 & 0x1F) << 6) | (b1 & 0x3F));
-}
-
-// Feeds one typed character through dead_keys.h's US-International
-// composition and inserts whatever comes out. Recurses at most once: a
-// requeued character can itself arm a NEW dead key (e.g. typing ' then `
-// flushes ' literally and requeues `, which then arms as its own pending
-// dead key), but dead_keys.h's own state machine guarantees that second
-// call can't produce a further requeue on top of it.
-static void insertProcessedChar(char c) {
-  const char* result = deadKeyProcess(c);
-  if (result == nullptr) {
-    typedGridInsert(c);
-    return;
-  }
-  if (result[0] != '\0') {
-    typedGridInsert((char)latin1FromUtf8(result));
-    const char requeued = deadKeyTakeRequeue();
-    if (requeued != 0) insertProcessedChar(requeued);
-  }
-  // result[0] == '\0': dead key stored, nothing to insert yet.
-}
+// Declared extern by tb_bridge.cpp/tb_runtime.cpp: on the X4 these pump the
+// d-pad into a running program and rearm its edge-detection after the
+// interpreter returns control. This device is touch-only -- there is no
+// physical button to pump -- so both are empty on purpose, not placeholders
+// for something missing.
+void physicalButtonsRearm() {}
+void pumpPhysicalButtonsForProgram() {}
 
 // osk.cpp's callback: exactly the (HID keycode, HID modifiers) pair
-// enqueueKeyEvent() will receive once input_handler.cpp is ported. Must be a
-// plain function (OskKeyCallback is a raw pointer, not std::function) --
-// no capture, all state is at module scope, matching how the real
-// enqueueKeyEvent() is itself a free function over a module-scope queue.
+// enqueueKeyEvent() expects, plus the `pressed=true` a discrete tap always
+// is -- osk.cpp only ever reports a completed tap, never separate down/up
+// edges, so every call here is a press. Matches how ble_keyboard.cpp calls
+// enqueueKeyEvent() for a newly-pressed HID key.
 static void onOskKey(uint8_t hidCode, uint8_t modifiers) {
-  if (hidCode == OSK_HID_ESCAPE) {
-    // dead_keys.h's own doc comment names Escape as one of the cases that
-    // should cancel a pending dead key.
-    deadKeyReset();
-    return;
-  }
-  if (hidCode == OSK_HID_BACKSPACE) {
-    deadKeyReset();
-    typedGridBackspace();
-    return;
-  }
-  if (hidCode == OSK_HID_LEFT) {
-    if (g_curCol > 0) g_curCol--;
-    return;
-  }
-  if (hidCode == OSK_HID_RIGHT) {
-    if (g_curCol < TERM_COLS - 1) g_curCol++;
-    return;
-  }
-  const char c = oskHidToChar(hidCode, modifiers);
-  if (c == '\n') {
-    deadKeyReset();
-    typedGridNewline();
-  } else if (c != 0) {
-    insertProcessedChar(c);
-  }
+  enqueueKeyEvent(hidCode, modifiers, true);
 }
 
-// g_typed stores Latin-1 (see insertProcessedChar()'s comment); drawText()
-// wants UTF-8. Every stored byte is either plain ASCII or a Latin-1
-// Supplement codepoint (0x80-0xFF), so each needing encoding is always
-// exactly a 2-byte UTF-8 sequence -- worst case every column is accented,
-// hence the 2x+1 buffer.
-static void latin1RowToUtf8(const char* row, char* out, size_t outSize) {
-  size_t o = 0;
-  for (size_t i = 0; row[i] != '\0' && o + 3 < outSize; i++) {
-    const uint8_t b = (uint8_t)row[i];
-    if (b < 0x80) {
-      out[o++] = (char)b;
-    } else {
-      out[o++] = (char)(0xC0 | (b >> 6));
-      out[o++] = (char)(0x80 | (b & 0x3F));
-    }
+// screenEditorGetCell() returns a raw Unicode codepoint per cell (dead key
+// composition inserts the composed codepoint directly -- see
+// input_handler.cpp's handleScreenEditorKey()), not a Latin-1 byte string,
+// so this is a real per-codepoint UTF-8 encoder, not the narrower Latin-1
+// case the on-screen keyboard's own earlier typing demo used. Every
+// codepoint this project's dead keys or keyboard can actually produce stays
+// within the Latin-1 Supplement range (<=0xFF), so 2 bytes/column is the
+// real worst case, matching the buffer size callers use.
+static int codepointToUtf8(uint32_t cp, char* out) {
+  if (cp < 0x80) {
+    out[0] = (char)cp;
+    return 1;
   }
-  out[o] = '\0';
+  if (cp < 0x800) {
+    out[0] = (char)(0xC0 | (cp >> 6));
+    out[1] = (char)(0x80 | (cp & 0x3F));
+    return 2;
+  }
+  // Not reachable with this project's current input sources, but handled
+  // rather than truncated silently if that ever changes.
+  out[0] = (char)(0xE0 | (cp >> 12));
+  out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+  out[2] = (char)(0x80 | (cp & 0x3F));
+  return 3;
 }
 
 static void drawTerminalContent() {
-  char banner[TERM_COLS + 1];
-  snprintf(banner, sizeof(banner), "FSP MicroBASIC PaperS3   SCREEN 1  %dx%d", TERM_COLS,
-           TERM_ROWS);
-  renderer.drawText(FONT_SCREEN_MONO_2, TERM_X, TERM_Y, banner);
-  renderer.drawText(FONT_SCREEN_MONO_2, TERM_X, TERM_Y + CELL_H, "READY.");
-  char utf8Row[TERM_COLS * 2 + 1];
-  for (int r = 0; r < TYPE_ROWS; r++) {
-    const int rowY = TERM_Y + (TYPE_ROW0 + r) * CELL_H;
-    // Rows the keyboard overlay would cover are skipped while it's visible
-    // -- no point drawing terminal content that's about to be painted over,
-    // and it keeps the "what actually changed" area minimal for FAST_REFRESH.
-    if (g_oskVisible && rowY >= OSK_Y) continue;
-    latin1RowToUtf8(g_typed[r], utf8Row, sizeof(utf8Row));
-    renderer.drawText(FONT_SCREEN_MONO_2, TERM_X, rowY, utf8Row);
+  const int cols = screenEditorCols();
+  const int rows = screenEditorRows();
+  const int cellW = screenEditorCellW();
+  const int cellH = screenEditorCellH();
+  const int marginY = screenEditorMarginY();
+  const int fontId = screenEditorFontId();
+
+  char utf8Row[SCREEN_EDITOR_MAX_COLS * 3 + 1];
+  for (int r = 0; r < rows; r++) {
+    int o = 0;
+    for (int c = 0; c < cols; c++) {
+      o += codepointToUtf8(screenEditorGetCell(r, c), utf8Row + o);
+    }
+    utf8Row[o] = '\0';
+    renderer.drawText(fontId, 0, marginY + r * cellH, utf8Row);
   }
-  // Solid-block cursor at the next insertion point (only meaningful while
-  // visible, i.e. not currently hidden under the keyboard overlay).
-  const int cursorY = TERM_Y + (TYPE_ROW0 + g_curRow) * CELL_H;
-  if (!(g_oskVisible && cursorY >= OSK_Y)) {
-    renderer.fillRect(TERM_X + g_curCol * CELL_W, cursorY, CELL_W, CELL_H, true);
+
+  // Cursor: a solid block at the next insertion point. Hidden while the
+  // interpreter is running -- tb_bridge.h's own doc comment explains why: a
+  // cursor means "waiting for you to type", and nothing is, and on a
+  // program that repaints cells in place it otherwise reads as a block
+  // stuck to the sprite.
+  if (!tbIsRunning()) {
+    const int cx = screenEditorGetCursorCol() * cellW;
+    const int cy = marginY + screenEditorGetCursorRow() * cellH;
+    renderer.fillRect(cx, cy, cellW, cellH, true);
   }
 }
 
@@ -345,6 +236,13 @@ static void drawScreen() {
   Serial.flush();
   firstPaintDone = true;
 }
+
+// Declared in screen_editor.h, defined here per its own doc comment: normal
+// screen updates go through loop() below, but a running BASIC program blocks
+// loopTask for its whole duration inside the interpreter, so byield() in
+// tb_runtime.cpp calls this directly (throttled by wall-clock time) to keep
+// a running program's output visible as it goes.
+void screenEditorFlushDisplay() { drawScreen(); }
 
 void setup() {
   Serial.begin(115200);
@@ -381,9 +279,12 @@ STEP("fonts");
 
   renderer.insertFont(FONT_UI, uiFamily);
   renderer.insertFont(FONT_BODY, bodyFamily);
-  renderer.insertFont(FONT_TITLE, titleFamily);
+  renderer.insertFont(FONT_LARGE, titleFamily);
   renderer.insertFont(FONT_SMALL, smallFamily);
+  renderer.insertFont(FONT_SCREEN_MONO_0, screenMono0Family);
+  renderer.insertFont(FONT_SCREEN_MONO_1, screenMono1Family);
   renderer.insertFont(FONT_SCREEN_MONO_2, screenMono2Family);
+  renderer.insertFont(FONT_SCREEN_MONO_3, screenMono3Family);
 
 STEP("input.begin");
   input.begin();
@@ -395,8 +296,16 @@ STEP("probeSdCard");
   Serial.println(sdLine);
 
 STEP("osk.init");
-  typedGridReset();
   oskInit(renderer, FONT_UI, FONT_SMALL, OSK_X, OSK_Y, OSK_W, OSK_H, onOskKey);
+
+STEP("inputSetup");
+  inputSetup();
+
+STEP("screenEditorSetMode");
+  screenEditorSetMode(2);  // SCREEN 2 (64-col), this panel's default -- see README
+
+STEP("tbSetup");
+  tbSetup();  // prints the boot banner into the terminal via screenEditorTermPrintLine
 
 STEP("drawScreen");
   drawScreen();
@@ -420,6 +329,14 @@ void loop() {
     printDiagnostics("beat");
   }
 
+  // Runs any autoexec.bas basicSetup() found at startup. Deliberately here,
+  // not in setup() -- see tb_bridge.h's own comment: a launcher-style
+  // program runs forever, and running it inside setup() means loop() (which
+  // reads touch, redraws, and keeps the interface alive) never starts.
+  // Internally guarded (checks st == SRUN) so calling this every iteration
+  // after the first is a cheap no-op.
+  tbRunPendingAutoexec();
+
   input.update();
 
   float nx, ny;
@@ -430,14 +347,24 @@ void loop() {
 
     if (tapInRect(lx, ly, TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H)) {
       g_oskVisible = !g_oskVisible;
-      drawScreen();
-    } else if (g_oskVisible && oskHandleTap(lx, ly)) {
+      screenDirty = true;
+    } else if (g_oskVisible) {
       // oskHandleTap() bounds-checks against the region passed to oskInit()
       // and returns false outside it; gated on g_oskVisible too so a tap
       // over the (currently hidden) overlay's fixed region doesn't get
       // misread as a key press while real terminal content is shown there.
-      drawScreen();
+      // A hit either arms/toggles a modifier (drawn differently, needs a
+      // redraw) or calls onOskKey() -> enqueueKeyEvent(), which
+      // processAllInput() below turns into an actual screen-editor action.
+      if (oskHandleTap(lx, ly)) screenDirty = true;
     }
+  }
+
+  processAllInput();
+
+  if (screenDirty) {
+    drawScreen();
+    screenDirty = false;
   }
   delay(10);
 }

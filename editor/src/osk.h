@@ -28,6 +28,7 @@ class GfxRenderer;
 // bit0 LCtrl, bit1 LShift, bit2 LAlt, bit4 RCtrl, bit5 RShift, bit6 RAlt.
 static constexpr uint8_t OSK_MOD_CTRL_LEFT = 0x01;
 static constexpr uint8_t OSK_MOD_SHIFT_LEFT = 0x02;
+static constexpr uint8_t OSK_MOD_ALT_LEFT = 0x04;
 
 // Keys a caller's callback typically needs to special-case rather than read
 // as a character (oskHidToChar() returns 0 for all of these except Enter,

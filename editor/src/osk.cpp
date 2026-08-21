@@ -7,7 +7,7 @@
 
 namespace {
 
-enum class KeyKind : uint8_t { Normal, Shift, Ctrl, CapsLock };
+enum class KeyKind : uint8_t { Normal, Shift, Ctrl, CapsLock, Alt };
 
 struct KeyDef {
   uint8_t hid;      // USB HID usage ID; 0 for modifier-only keys (kind != Normal)
@@ -49,57 +49,72 @@ constexpr uint8_t HID_DOWN = 0x51;
 // on the physical panel.
 constexpr int kUnitsPerRow = 32;
 
-// Row 0: Esc (there is no separate function-key row on this 5-row layout,
-// so it takes the top-left slot the way compact/tenkeyless boards do --
-// functionally important, not just conventional: input_handler.cpp treats
-// Escape and Ctrl+C as BASIC's two "stop the program" gestures), digits,
-// - =, Backspace.
+// Row 0: Esc, ` ~ (there is no separate function-key row on this 5-row
+// layout, so Esc takes the top-left slot the way compact/tenkeyless boards
+// do -- functionally important, not just conventional: input_handler.cpp
+// treats Escape and Ctrl+C as BASIC's two "stop the program" gestures),
+// digits, - =, Backspace. Esc+` together are 4 half-units, one half-unit
+// less than row 1's Tab (5) -- see kRow1's comment for why that specific
+// spacing was picked, the same uniform cascade this row now joins.
 const KeyDef kRow0[] = {
     {HID_ESCAPE, 2, 1, KeyKind::Normal, "Esc"},
+    {HID_GRAVE, 2, 1, KeyKind::Normal, nullptr},
     {0x1E, 2, 1, KeyKind::Normal, nullptr}, {0x1F, 2, 1, KeyKind::Normal, nullptr},
     {0x20, 2, 1, KeyKind::Normal, nullptr}, {0x21, 2, 1, KeyKind::Normal, nullptr},
     {0x22, 2, 1, KeyKind::Normal, nullptr}, {0x23, 2, 1, KeyKind::Normal, nullptr},
     {0x24, 2, 1, KeyKind::Normal, nullptr}, {0x25, 2, 1, KeyKind::Normal, nullptr},
     {0x26, 2, 1, KeyKind::Normal, nullptr}, {0x27, 2, 1, KeyKind::Normal, nullptr},
     {HID_MINUS, 2, 1, KeyKind::Normal, nullptr}, {HID_EQUALS, 2, 1, KeyKind::Normal, nullptr},
-    {HID_BACKSPACE, 6, 1, KeyKind::Normal, "Bksp"},
+    {HID_BACKSPACE, 4, 1, KeyKind::Normal, "Bksp"},
 };
 
-// Row 1: Tab, Q-P, [ ] \.
+// Row 1: Tab, Q-P, [ ] \. Tab is 5 half-units (was 4) -- the whole Tab/Caps/
+// Shift(L)/Ctrl cascade below shifted up by one half-unit from an earlier
+// draft so row 0's new Esc+` (4 half-units) lines up as the row above it,
+// continuing the SAME uniform one-half-unit-per-row step (row0=4, row1=5,
+// row2=6, row3=7) instead of the uneven jump an earlier draft had. Backslash
+// gives up the half-unit Tab gained, same "grow the left edge, shrink the
+// right edge, same row total" trade every row below makes too.
 const KeyDef kRow1[] = {
-    {HID_TAB, 4, 1, KeyKind::Normal, "Tab"},
+    {HID_TAB, 5, 1, KeyKind::Normal, "Tab"},
     {0x14, 2, 1, KeyKind::Normal, nullptr}, {0x1A, 2, 1, KeyKind::Normal, nullptr},
     {0x08, 2, 1, KeyKind::Normal, nullptr}, {0x15, 2, 1, KeyKind::Normal, nullptr},
     {0x17, 2, 1, KeyKind::Normal, nullptr}, {0x1C, 2, 1, KeyKind::Normal, nullptr},
     {0x18, 2, 1, KeyKind::Normal, nullptr}, {0x0C, 2, 1, KeyKind::Normal, nullptr},
     {0x12, 2, 1, KeyKind::Normal, nullptr}, {0x13, 2, 1, KeyKind::Normal, nullptr},
     {HID_LBRACKET, 2, 1, KeyKind::Normal, nullptr}, {HID_RBRACKET, 2, 1, KeyKind::Normal, nullptr},
-    {HID_BACKSLASH, 4, 1, KeyKind::Normal, nullptr},
+    {HID_BACKSLASH, 3, 1, KeyKind::Normal, nullptr},
 };
 
-// Row 2: Caps Lock (5 half-units -- half a key wider than Tab's 4), A-L, ;
-// ', Enter (ANSI end-of-home-row position, one row tall).
+// Row 2: Caps Lock (6 half-units, was 5), A-L, ; ', Enter (ANSI
+// end-of-home-row position, one row tall). Enter gives up the half-unit
+// Caps gained.
 const KeyDef kRow2[] = {
-    {0, 5, 1, KeyKind::CapsLock, "Caps"},
+    {0, 6, 1, KeyKind::CapsLock, "Caps"},
     {0x04, 2, 1, KeyKind::Normal, nullptr}, {0x16, 2, 1, KeyKind::Normal, nullptr},
     {0x07, 2, 1, KeyKind::Normal, nullptr}, {0x09, 2, 1, KeyKind::Normal, nullptr},
     {0x0A, 2, 1, KeyKind::Normal, nullptr}, {0x0B, 2, 1, KeyKind::Normal, nullptr},
     {0x0D, 2, 1, KeyKind::Normal, nullptr}, {0x0E, 2, 1, KeyKind::Normal, nullptr},
     {0x0F, 2, 1, KeyKind::Normal, nullptr},
     {HID_SEMICOLON, 2, 1, KeyKind::Normal, nullptr}, {HID_APOSTROPHE, 2, 1, KeyKind::Normal, nullptr},
-    {HID_ENTER, 5, 1, KeyKind::Normal, "Enter"},
+    {HID_ENTER, 4, 1, KeyKind::Normal, "Enter"},
 };
 
-// Row 3: Shift (6 half-units -- half a key wider than Caps's 5), Z-M, , . /,
-// Shift.
+// Row 3: Shift (7 half-units, was 6), Z-M, , . /, Shift. The extra
+// half-unit LShift gained comes out of / (2 half-units -> 1) rather than
+// the trailing gap, specifically to keep Right Shift and Up starting at the
+// SAME half-unit offset (26) they were at before -- see the Up-alignment
+// comment below; that alignment with row 4's Left/Down/Right (unchanged at
+// 26/28/30) mattered more than keeping every punctuation key visually
+// uniform.
 const KeyDef kRow3[] = {
-    {0, 6, 1, KeyKind::Shift, "Shift"},
+    {0, 7, 1, KeyKind::Shift, "Shift"},
     {0x1D, 2, 1, KeyKind::Normal, nullptr}, {0x1B, 2, 1, KeyKind::Normal, nullptr},
     {0x06, 2, 1, KeyKind::Normal, nullptr}, {0x19, 2, 1, KeyKind::Normal, nullptr},
     {0x05, 2, 1, KeyKind::Normal, nullptr}, {0x11, 2, 1, KeyKind::Normal, nullptr},
     {0x10, 2, 1, KeyKind::Normal, nullptr},
     {HID_COMMA, 2, 1, KeyKind::Normal, nullptr}, {HID_PERIOD, 2, 1, KeyKind::Normal, nullptr},
-    {HID_SLASH, 2, 1, KeyKind::Normal, nullptr},
+    {HID_SLASH, 1, 1, KeyKind::Normal, nullptr},
     // Right Shift shrinks to 2 half-units (from 6) to make room for Up here,
     // in the inverted-T arrow cluster's classic position: directly above
     // Down (row 4 below aligns Left/Down/Right at the same half-unit
@@ -110,12 +125,15 @@ const KeyDef kRow3[] = {
     {HID_UP, 2, 1, KeyKind::Normal, "^"},
 };
 
-// Row 4: Ctrl, `, Space, Left/Down/Right (Up moved to row 3 above, aligned
-// with Down -- see kRow3's comment).
+// Row 4: Ctrl (5 half-units, was 4 -- joins the same cascade the other
+// rows' left-edge keys got), Alt, Space, Left/Down/Right (Up moved to row 3
+// above, aligned with Down -- see kRow3's comment). ` moved to row 0
+// (alongside Esc); this row's Ctrl absorbing its own extra half-unit plus
+// Alt being new both come out of Space, which still has plenty of room.
 const KeyDef kRow4[] = {
-    {0, 4, 1, KeyKind::Ctrl, "Ctrl"},
-    {HID_GRAVE, 2, 1, KeyKind::Normal, nullptr},
-    {HID_SPACE, 20, 1, KeyKind::Normal, ""},
+    {0, 5, 1, KeyKind::Ctrl, "Ctrl"},
+    {0, 3, 1, KeyKind::Alt, "Alt"},
+    {HID_SPACE, 18, 1, KeyKind::Normal, ""},
     {HID_LEFT, 2, 1, KeyKind::Normal, "<"},
     {HID_DOWN, 2, 1, KeyKind::Normal, "v"},
     {HID_RIGHT, 2, 1, KeyKind::Normal, ">"},
@@ -145,12 +163,14 @@ OskKeyCallback g_onKey = nullptr;
 
 bool g_shiftArmed = false;
 bool g_ctrlArmed = false;
+bool g_altArmed = false;
 bool g_capsLockOn = false;
 
 uint8_t currentModifiers() {
   uint8_t mods = 0;
   if (g_shiftArmed) mods |= OSK_MOD_SHIFT_LEFT;
   if (g_ctrlArmed) mods |= OSK_MOD_CTRL_LEFT;
+  if (g_altArmed) mods |= OSK_MOD_ALT_LEFT;
   return mods;
 }
 
@@ -170,6 +190,7 @@ void oskInit(GfxRenderer& renderer, int labelFontId, int smallLabelFontId, int x
   g_onKey = onKey;
   g_shiftArmed = false;
   g_ctrlArmed = false;
+  g_altArmed = false;
   g_capsLockOn = false;
 }
 
@@ -252,6 +273,7 @@ void oskDraw() {
 
       const bool armed = (k.kind == KeyKind::Shift && g_shiftArmed) ||
                           (k.kind == KeyKind::Ctrl && g_ctrlArmed) ||
+                          (k.kind == KeyKind::Alt && g_altArmed) ||
                           (k.kind == KeyKind::CapsLock && g_capsLockOn);
 
       const int kx = rect.x + kInset, ky = rect.y + kInset;
@@ -290,7 +312,7 @@ void oskDraw() {
         g_renderer->drawText(g_fontId, tx, ty, label, !armed);
       }
 
-      // Small Shift-hint in the top-left corner: what this key produces
+      // Small Shift-hint in the top-RIGHT corner: what this key produces
       // WITH Shift, shown even while Shift isn't currently armed -- matches
       // a real keycap's dual legend (small shifted symbol above the main
       // character), so someone who doesn't remember e.g. Shift+7 = & can
@@ -304,7 +326,13 @@ void oskDraw() {
         const char shifted = oskHidToChar(k.hid, currentModifiers() | OSK_MOD_SHIFT_LEFT);
         if (shifted != 0 && shifted != plain) {
           char hint[2] = {shifted, '\0'};
-          g_renderer->drawText(g_smallFontId, rect.x + kInset + 2, rect.y + kInset, hint, !armed);
+          // A few px clear of both the top and right edges rather than
+          // flush against them -- flush read as glued to the border on the
+          // physical panel.
+          constexpr int kHintMargin = 5;
+          const int hintW = g_renderer->getTextWidth(g_smallFontId, hint);
+          g_renderer->drawText(g_smallFontId, rect.x + rect.w - kInset - kHintMargin - hintW,
+                                rect.y + kInset + kHintMargin, hint, !armed);
         }
       }
 
@@ -336,18 +364,22 @@ bool oskHandleTap(int logicalX, int logicalY) {
           case KeyKind::Ctrl:
             g_ctrlArmed = !g_ctrlArmed;
             return true;
+          case KeyKind::Alt:
+            g_altArmed = !g_altArmed;
+            return true;
           case KeyKind::CapsLock:
             g_capsLockOn = !g_capsLockOn;
             return true;
           case KeyKind::Normal: {
             const uint8_t mods = currentModifiers();
             if (g_onKey) g_onKey(k.hid, mods);
-            // One-shot: Shift/Ctrl apply to exactly the next normal key,
+            // One-shot: Shift/Ctrl/Alt apply to exactly the next normal key,
             // then clear themselves -- the standard touch-keyboard
             // "temporary shift" instead of a held key. Caps Lock is a
             // separate, genuinely sticky toggle and is untouched here.
             g_shiftArmed = false;
             g_ctrlArmed = false;
+            g_altArmed = false;
             return true;
           }
         }

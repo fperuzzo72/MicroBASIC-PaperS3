@@ -100,18 +100,25 @@ const KeyDef kRow3[] = {
     {0x10, 2, 1, KeyKind::Normal, nullptr},
     {HID_COMMA, 2, 1, KeyKind::Normal, nullptr}, {HID_PERIOD, 2, 1, KeyKind::Normal, nullptr},
     {HID_SLASH, 2, 1, KeyKind::Normal, nullptr},
-    {0, 6, 1, KeyKind::Shift, "Shift"},
+    // Right Shift shrinks to 2 half-units (from 6) to make room for Up here,
+    // in the inverted-T arrow cluster's classic position: directly above
+    // Down (row 4 below aligns Left/Down/Right at the same half-unit
+    // offsets, 26/28/30, so Up at 28 lines up with Down exactly). The
+    // trailing 2 half-units (30-32, above Right) are deliberately left
+    // undeclared -- real keyboards leave that same cell blank too.
+    {0, 2, 1, KeyKind::Shift, "Shift"},
+    {HID_UP, 2, 1, KeyKind::Normal, "^"},
 };
 
-// Row 4: Ctrl, `, Space, full arrow cluster.
+// Row 4: Ctrl, `, Space, Left/Down/Right (Up moved to row 3 above, aligned
+// with Down -- see kRow3's comment).
 const KeyDef kRow4[] = {
     {0, 4, 1, KeyKind::Ctrl, "Ctrl"},
     {HID_GRAVE, 2, 1, KeyKind::Normal, nullptr},
-    {HID_SPACE, 18, 1, KeyKind::Normal, ""},
+    {HID_SPACE, 20, 1, KeyKind::Normal, ""},
     {HID_LEFT, 2, 1, KeyKind::Normal, "<"},
-    {HID_RIGHT, 2, 1, KeyKind::Normal, ">"},
-    {HID_UP, 2, 1, KeyKind::Normal, "^"},
     {HID_DOWN, 2, 1, KeyKind::Normal, "v"},
+    {HID_RIGHT, 2, 1, KeyKind::Normal, ">"},
 };
 
 struct Row {

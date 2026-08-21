@@ -301,18 +301,19 @@ static void drawTerminalContent() {
   char utf8Row[TERM_COLS * 2 + 1];
   for (int r = 0; r < TYPE_ROWS; r++) {
     const int rowY = TERM_Y + (TYPE_ROW0 + r) * CELL_H;
-    // Rows the keyboard overlay covers are now drawn too, not skipped --
-    // the overlay's key backgrounds are a sparse dot pattern that leaves
-    // most of this text showing through (see osk.cpp's oskDraw()), so
-    // there is something worth drawing under it. Costs a bit of extra draw
-    // time on every refresh while the keyboard is up; not worth optimizing
-    // away for a bring-up program.
+    // Rows the keyboard overlay would cover are skipped while it's visible
+    // -- no point drawing terminal content that's about to be painted over,
+    // and it keeps the "what actually changed" area minimal for FAST_REFRESH.
+    if (g_oskVisible && rowY >= OSK_Y) continue;
     latin1RowToUtf8(g_typed[r], utf8Row, sizeof(utf8Row));
     renderer.drawText(FONT_SCREEN_MONO_2, TERM_X, rowY, utf8Row);
   }
-  // Solid-block cursor at the next insertion point.
+  // Solid-block cursor at the next insertion point (only meaningful while
+  // visible, i.e. not currently hidden under the keyboard overlay).
   const int cursorY = TERM_Y + (TYPE_ROW0 + g_curRow) * CELL_H;
-  renderer.fillRect(TERM_X + g_curCol * CELL_W, cursorY, CELL_W, CELL_H, true);
+  if (!(g_oskVisible && cursorY >= OSK_Y)) {
+    renderer.fillRect(TERM_X + g_curCol * CELL_W, cursorY, CELL_W, CELL_H, true);
+  }
 }
 
 static void drawToggleButton() {

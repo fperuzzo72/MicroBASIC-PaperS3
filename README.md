@@ -12,11 +12,18 @@ rebuilt for touch.
 
 ## Status
 
-**Milestone 1 — hardware bring-up.** `editor/src/main.cpp` is a bring-up
-program, not the firmware: it proves the EPD, the GT911 touch panel and the SD
-card on the real device, and draws the decided character grid at true size so
-the cell dimensions can be judged with the eye before any font is regenerated
-against them.
+**Milestones 1 and 2 — hardware bring-up + real SCREEN fonts — done and
+confirmed on real hardware.** `editor/src/main.cpp` is a bring-up program,
+not the firmware: it proves the EPD, the GT911 touch panel and the SD card,
+and fills the entire 48×24 terminal grid with real `unscii_11x22` glyphs
+(pangrams, digits, symbols, Portuguese accents) so legibility could be judged
+on the physical panel rather than assumed.
+
+The first attempt at this was garbled — traced to a real bug in
+`emit_epdfont_header.py` (see "The font format changed underneath the port"
+below), not a resolution limit. Fixed, verified by decoding the regenerated
+header with the renderer's own bit-reading algorithm, and confirmed legible
+on the device.
 
 The X4 sources are carried in `editor/port-staging/` and move into
 `editor/src/` one at a time as each is ported. Nothing there compiles for this
@@ -33,10 +40,9 @@ for the pin-by-pin CONFIRMED/PENDING breakdown. `GfxRenderer`, `EpdFont` and
 which already runs this panel; MicroBASIC's own copies were the older X4-era
 versions with the panel size baked in as compile-time constants.
 
-Two items in the SDK's profile are still listed as unverified and both are
-exercised deliberately by the bring-up program: the GT911 `flipX`/`flipY`
-values (inherited from M5Paper v1.1 by analogy, never confirmed on this chip
-revision) and touch corner accuracy.
+The GT911 `flipX`/`flipY` values (inherited from M5Paper v1.1 by analogy) are
+**confirmed correct** via a real 4-corner-tap test on the physical device —
+was listed unverified in the SDK's own profile, updated there too.
 
 ## Screen geometry — decided
 
@@ -95,9 +101,7 @@ uint16_t advanceX;   // now: 12.4 fixed-point, read via fp4::toPixel()
 
 `GfxRenderer.cpp` reads it as 12.4 throughout, so an advance emitted in whole
 pixels renders at 1/16 of its intended width. `emit_epdfont_header.py` needs
-`advanceX = cell_w << 4`. The unconverted headers are parked in
-`editor/port-staging/_fonts_x4_unconverted/` rather than in the font directory,
-so they cannot be included by accident.
+`advanceX = cell_w << 4`. Fixed, in `research/fonts/tools/emit_epdfont_header.py`.
 
 The trailing `EpdFontData` fields added since (groups, kerning classes,
 ligatures, glyph-miss handlers) are all safe to leave out: the headers use
@@ -105,20 +109,70 @@ positional aggregate initialization, so the new members value-initialize to
 zero/`nullptr`, which is exactly "no compression, no kerning, no ligatures".
 `ascender` must still be 0 to match `top=0` — `drawText()` still adds it.
 
+A second, more serious bug was in the emitter, not the format: it packed
+each bitmap **row** into its own byte-aligned bytes, while
+`GfxRenderer.cpp`'s `renderCharImpl()` reads the glyph as **one continuous
+bitstream** with no padding between rows. The two schemes are
+byte-identical for any cell width that happens to be a multiple of 8 —
+which is exactly why it went unnoticed on the X4 (SCREEN 0/1, widths 24/16)
+while SCREEN 2/3 (widths 12/10) were quietly garbled from each glyph's
+second row onward. This device's own 11×22/22×44 fonts (widths 11/22)
+reproduced it immediately, confirmed by a photo showing crisp NotoSans UI
+text next to visibly streaked mono glyphs in the same frame. Fixed via
+`pack_bits_contiguous()` in the same emitter. Verify any future font header
+against `renderCharImpl()`'s actual read loop directly (decode a few known
+glyphs in Python using that exact bit indexing and render to a PNG) rather
+than trusting that the resize algorithm being correct implies the final
+packed bytes are — the two bugs above both compiled clean and looked
+individually reasonable.
+
 ## Flashing
 
-**Do not `pio run -t upload`.** `board_upload.offset_address` is `0x10000`,
-which on this device is where M5Launcher itself lives:
+**Never `pio run -t upload`, and never write to `0x10000`.** That writes
+bootloader.bin + the partition table + otadata + the app — not just the
+app — silently replacing M5Launcher's own bootloader with one this
+project's `platformio.ini` compiles. On this device that is not cosmetic:
+the EPD only draws when running under **M5Launcher's own original
+bootloader** — confirmed by direct A/B, same app code, same serial "success"
+either way, panel dead under a freshly-compiled bootloader and working under
+Launcher's. `0x10000` (`app0`) is also not "whatever's convenient" — it is
+M5Launcher's actual code, the thing that runs on every boot and decides what
+to load next; overwriting it breaks the picker, not just this build.
+
+The safe recipe: build the app only, then write *just* `firmware.bin` into
+an existing **app-type OTA partition that is not `app0`**, with plain
+esptool — never bootloader.bin, partitions.bin, or otadata:
+
+```bash
+esptool.py --chip esp32s3 --port <port> --baud 921600 \
+    write_flash <slot offset> .pio/build/m5papers3/firmware.bin
+```
+
+Read the live partition table first (`esptool read_flash 0x8000 0xC00` +
+`gen_esp32part.py`) — offsets change whenever slots are added or removed.
+As of 2026-08-21 the table is:
 
 ```
-app0    test   0x10000   1536K   <- M5Launcher
-crossp  ota_0  0x1a0000  5312K
-paperb  ota_1  0x6d0000   512K
-factor  ota_2  0x750000  1344K
-dos000  ota_3  0x8a0000  1792K
+nvs       data  nvs      0x9000    16K
+otadata   data  ota      0xd000     8K
+phy_init  data  phy      0xf000     4K
+app0      app   test     0x10000  1536K   <- M5Launcher, NEVER write here
+coredump  data  coredump 0x190000   64K
+crossp    app   ota_0    0x1a0000 5312K   <- currently holds THIS bring-up
+                                             firmware, not the real reader
 ```
 
-Build the binary and let M5Launcher install it from the SD card root.
+`crossp` is where this project's own testing has been landing (CrossPoint's
+own binary is not currently in flash on the dev unit — restore it from
+`~/Desktop/M5PaperS3-backup/` if the reader itself is needed again). After
+flashing, power-cycle the physical button rather than triggering an esptool
+soft reset — Launcher decides what to load on every boot and has an
+intermittent bug where it doesn't always auto-load the last-used firmware,
+needing a manual tap-through.
+
+Full-flash backups of the dev unit (bootloader + partition table + every
+app, restorable in one `write_flash 0x0 <backup>.bin`) live outside this
+repo at `~/Desktop/M5PaperS3-backup/`, with their own `RESTAURAR.md`.
 
 ## What has to work
 

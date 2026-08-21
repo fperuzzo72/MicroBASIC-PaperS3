@@ -4,3 +4,5 @@
 platformio.local.ini
 *.bin
 port-staging/_fonts_x4_unconverted/
+# ESP-IDF component manager's own backup, regenerated every build
+editor/src/idf_component.yml.orig

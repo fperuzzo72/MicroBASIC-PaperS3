@@ -12,22 +12,38 @@ rebuilt for touch.
 
 ## Status
 
-**Milestones 1 and 2 — hardware bring-up + real SCREEN fonts — done and
-confirmed on real hardware.** `editor/src/main.cpp` is a bring-up program,
-not the firmware: it proves the EPD, the GT911 touch panel and the SD card,
-and fills the entire 48×24 terminal grid with real `unscii_11x22` glyphs
-(pangrams, digits, symbols, Portuguese accents) so legibility could be judged
-on the physical panel rather than assumed.
+**Milestones 1-3 — hardware bring-up, real SCREEN fonts, on-screen
+keyboard — done and confirmed on real hardware.** `editor/src/main.cpp` is a
+bring-up program, not the firmware: it proves the EPD, the GT911 touch panel
+and the SD card; fills the terminal grid with real glyphs so legibility could
+be judged on the physical panel rather than assumed; and demonstrates a full
+touch keyboard (`osk.cpp`/`osk.h`) by echoing typed, US-International-composed
+text into that grid.
 
-The first attempt at this was garbled — traced to a real bug in
-`emit_epdfont_header.py` (see "The font format changed underneath the port"
-below), not a resolution limit. Fixed, verified by decoding the regenerated
-header with the renderer's own bit-reading algorithm, and confirmed legible
-on the device.
+Landscape, not portrait: an early portrait build (540px wide) worked but felt
+cramped — both the terminal text and the keyboard keys read as too small on
+real hardware. Landscape (960×540, the panel's native orientation) gave both
+the room they needed. The terminal defaults to SCREEN 2 (64-col, cell 15×30,
+`unscii_15x30`) — 960/15=64 and 540/30=18 divide the panel exactly, zero
+margin either axis. Font legibility survived one real bug along the way: the
+first attempt at any of these SCREEN fonts came out garbled, traced to a real
+packing bug in `emit_epdfont_header.py` (see "The font format changed
+underneath the port" below), not a resolution limit. Fixed, and verified by
+decoding the regenerated header with the renderer's own bit-reading algorithm
+before ever trusting it on hardware again.
+
+The on-screen keyboard (five main rows plus Esc alone above them, US-
+International dead-key composition via `dead_keys.h`, a two-tier gray keycap
+style, a full ANSI-ish layout with a physical-keyboard row stagger) went
+through many rounds of real-hardware iteration — arrow cluster shape,
+Enter's position and shape, key spacing and corner rounding, Shift-hint
+placement — before landing on something confirmed to work well, limited only
+by this panel's touch-reading precision, not by the keyboard's own design.
 
 The X4 sources are carried in `editor/port-staging/` and move into
-`editor/src/` one at a time as each is ported. Nothing there compiles for this
-board yet — that is the point of staging them.
+`editor/src/` one at a time as each is ported (`dead_keys.h` already has,
+being self-contained). Nothing else there compiles for this board yet --
+that is the point of staging them.
 
 ## Hardware layer
 
@@ -46,47 +62,54 @@ was listed unverified in the SDK's own profile, updated there too.
 
 ## Screen geometry — decided
 
-Portrait, always. The terminal sits above a **fixed** on-screen keyboard,
-which only works on the long axis.
+Landscape, not portrait. An early portrait build (540px logical width, the
+terminal stacked above a keyboard permanently docked below it) worked but
+felt cramped on real hardware — both the terminal text and the keyboard keys
+read as too small. Landscape (960×540) is this panel's native rotation=0
+orientation (`GfxRenderer::LandscapeCounterClockwise`, confirmed correct on
+hardware) and gives both the room they needed.
 
-```
-   540 × 960 portrait
-   ┌─────────────────┐
-   │ 6│  48 × 24    │6│   terminal  528 × 528   cell 11 × 22
-   │  │  cell 11×22 │ │
-   ├─────────────────┤
-   │    keyboard     │   540 × 432
-   └─────────────────┘
-```
-
-48 columns does **not** divide 540 evenly (540/48 = 11.25). At an 11px cell,
-48 columns is 528px, leaving a 6px margin each side. 24 rows at the matching
-1:2 cell height (22px) is another 528px — so the terminal is an exact square,
-which is about as close to a period CRT's proportions as this panel gets. The
-keyboard takes the remaining 432px at full width; at this panel's ~234 ppi
-that is roughly 5.9 × 9.3 mm per key, which is more generous than a phone's.
+With the terminal no longer sharing the panel with a permanently docked
+keyboard, it claims the **entire** 960×540 panel. The on-screen keyboard is a
+**toggleable overlay** instead — a "KBD" button (top-right) shows/hides it
+covering the bottom 300px (10 terminal rows) when needed; the intended real
+policy is a paired BLE keyboard is preferred and this is a reserve you summon
+on demand, not something permanently eating screen space (nothing here
+detects a real BLE keyboard yet, since `ble_keyboard.cpp` isn't ported — the
+toggle button demonstrates the show/hide mechanism the real policy will drive
+later).
 
 ### SCREEN modes
 
 | Mode | Columns × Rows | Cell | Scale from unscii-16 |
 |---|---|---|---|
-| `SCREEN 0` | 24×12 | 22×44 | 2.75× |
-| `SCREEN 1` | 48×24 | 11×22 | 1.375× — **boots here** |
+| `SCREEN 0` | 32×9 | 30×60 | 3.75× |
+| `SCREEN 1` | 48×13 | 20×40 | 2.5× — matches the X4's own default column count |
+| `SCREEN 2` | 64×18 | 15×30 | 1.875× — **boots here** |
+| `SCREEN 3` | 80×22 | 12×24 | 1.5× |
 
-Only two, and that is a constraint rather than a choice. With the terminal
-locked at 528×528 and cells kept at 1:2, the sizes that divide 528 evenly on
-both axes are 11×22, 12×24 and 22×44 — and 44×22 (the 12×24 cell) is so close
-to 48×24 that it earns nothing. Anything denser means an 8px-wide cell, which
-is below the readability floor this project already established on hardware:
+All four column counts from the X4's original scheme carry over unchanged
+(960 = 2⁶×3×5, so every one of 32/48/64/80 divides it exactly — no column
+margin in any mode, unlike the X4's own 800px panel). Only `SCREEN 0` and
+`SCREEN 2` also divide 540 exactly on the row axis (9 and 18 rows, zero
+margin); `SCREEN 1` and `SCREEN 3` get a small centered top/bottom margin (10px
+and 6px) the same way the X4's own non-exact modes do. This device boots into
+`SCREEN 2` (64-col) by default rather than the X4's `SCREEN 1` (48-col) —
+deliberately different: the X4 defaults to 48-col because that reads best at
+its panel size, but this panel has enough room that 64-col is the better
+default here. All four fonts are generated and verified; only `SCREEN 2`'s is
+currently wired into the renderer, since nothing in this bring-up program can
+switch modes at runtime (no BASIC interpreter yet).
+
+Every cell above is a non-integer rescale of unscii-16, the case
+`AreaResampledHexFont` already exists to handle (the X4's own 10×20 and
+12×24 sizes are 1.25× and 1.5× for the same reason). All comfortably clear
+the readability floor this project established on the X4:
 
 > Unscii's native Latin glyphs only come in 8x8 and 8x16 — both under this
 > project's 10x20px "smallest still readable" floor.
 >
 > — `research/fonts/tools/generate_screen_fonts.py`
-
-Both cells are non-integer rescales of unscii-16, which is the case
-`AreaResampledHexFont` already exists to handle (the X4's 10×20 and 12×24 are
-1.25× and 1.5×).
 
 ### The font format changed underneath the port
 
@@ -178,15 +201,24 @@ repo at `~/Desktop/M5PaperS3-backup/`, with their own `RESTAURAR.md`.
 
 1. Text editor with the US-International keyboard layout and dead keys.
    TypeWriter and Clean screen modes are dropped; the standard mode only.
+   **Dead-key composition itself is done and confirmed** — `dead_keys.h`
+   (self-contained, no editor/BLE/wifi dependencies) is ported and wired into
+   the bring-up's typing demo; the text editor it belongs in
+   (`text_editor.cpp`) is still in `port-staging/`.
 2. BASIC interpreter and screen editor.
 3. File read/write, creating new `.txt` and `.bas` files.
 4. WiFi and the file-transfer web server.
 5. Bluetooth keyboard.
-6. **On-screen keyboard.** Not on the original list, but not optional either:
-   with no physical buttons and no keyboard paired, the device is otherwise
-   mute at first boot. It injects HID keycodes into `enqueueKeyEvent()` —
-   the single funnel every key already passes through — so the editor, the
-   dead-key handling and the BASIC layer need no changes to accept touch.
+6. **On-screen keyboard — done and confirmed working well on real hardware.**
+   Not on the original list, but not optional either: with no physical
+   buttons and no keyboard paired, the device is otherwise mute at first
+   boot. It injects HID keycodes through a plain callback using the exact
+   wire format `enqueueKeyEvent()` already expects on the X4, so the editor,
+   the dead-key handling and the BASIC layer need no changes to accept touch
+   once that file is ported. Went through many real-hardware iterations
+   (layout, spacing, Enter's shape, key coloring) before landing on something
+   confirmed to work well — limited only by this panel's own touch-reading
+   precision, not by the keyboard's design.
 
 Things the PaperS3 makes newly possible, or newly necessary:
 
@@ -195,7 +227,7 @@ Things the PaperS3 makes newly possible, or newly necessary:
 - **Power-off is a pulse train**, not a level — `digitalWrite(LOW)` does not
   turn this board off. `freeink::m5papers3::powerOff()`.
 - **`SCREEN 4` (graphics)** was never built on the X4 for want of RAM. A 1-bit
-  540×960 framebuffer is 63KB against 8MB of PSRAM here.
+  960×540 framebuffer is 63KB against 8MB of PSRAM here.
 - **Dual-boot/OTA** is M5Launcher's job on this device, so `OtaBootSwitch`
   most likely does not come across at all.
 

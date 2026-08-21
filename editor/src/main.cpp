@@ -42,6 +42,7 @@
 #include <builtinFonts/ubuntu_10_regular.h>
 #include <builtinFonts/unscii_15x30.h>
 
+#include "dead_keys.h"
 #include "osk.h"
 
 // Logging.h (pulled in transitively by the hal headers) redefines Serial as a
@@ -197,13 +198,55 @@ static void typedGridInsert(char c) {
   g_curCol++;
 }
 
+// dead_keys.h's composed results are UTF-8 (1-3 bytes), but g_typed stores
+// one byte per cell -- matching screen_editor.h's own documented convention
+// ("characters come out as Latin-1 bytes, the same one-byte-per-character
+// encoding BASIC strings use throughout"), not UTF-8. Every result this
+// table produces is either plain ASCII (the literal-dead-key entries) or a
+// 2-byte UTF-8 sequence for a Latin-1 Supplement codepoint (0xC2/0xC3 lead
+// byte), so this decode is exact for everything dead_keys.h can return --
+// it is NOT a general UTF-8 decoder.
+static uint8_t latin1FromUtf8(const char* s) {
+  const uint8_t b0 = (uint8_t)s[0];
+  if (b0 < 0x80) return b0;
+  const uint8_t b1 = (uint8_t)s[1];
+  return (uint8_t)(((b0 & 0x1F) << 6) | (b1 & 0x3F));
+}
+
+// Feeds one typed character through dead_keys.h's US-International
+// composition and inserts whatever comes out. Recurses at most once: a
+// requeued character can itself arm a NEW dead key (e.g. typing ' then `
+// flushes ' literally and requeues `, which then arms as its own pending
+// dead key), but dead_keys.h's own state machine guarantees that second
+// call can't produce a further requeue on top of it.
+static void insertProcessedChar(char c) {
+  const char* result = deadKeyProcess(c);
+  if (result == nullptr) {
+    typedGridInsert(c);
+    return;
+  }
+  if (result[0] != '\0') {
+    typedGridInsert((char)latin1FromUtf8(result));
+    const char requeued = deadKeyTakeRequeue();
+    if (requeued != 0) insertProcessedChar(requeued);
+  }
+  // result[0] == '\0': dead key stored, nothing to insert yet.
+}
+
 // osk.cpp's callback: exactly the (HID keycode, HID modifiers) pair
 // enqueueKeyEvent() will receive once input_handler.cpp is ported. Must be a
 // plain function (OskKeyCallback is a raw pointer, not std::function) --
 // no capture, all state is at module scope, matching how the real
 // enqueueKeyEvent() is itself a free function over a module-scope queue.
 static void onOskKey(uint8_t hidCode, uint8_t modifiers) {
+  if (hidCode == OSK_HID_ESCAPE) {
+    // dead_keys.h's own doc comment names Escape as one of the cases that
+    // should cancel a pending dead key.
+    deadKeyReset();
+    return;
+  }
   if (hidCode == OSK_HID_BACKSPACE) {
+    deadKeyReset();
     typedGridBackspace();
     return;
   }
@@ -217,10 +260,30 @@ static void onOskKey(uint8_t hidCode, uint8_t modifiers) {
   }
   const char c = oskHidToChar(hidCode, modifiers);
   if (c == '\n') {
+    deadKeyReset();
     typedGridNewline();
   } else if (c != 0) {
-    typedGridInsert(c);
+    insertProcessedChar(c);
   }
+}
+
+// g_typed stores Latin-1 (see insertProcessedChar()'s comment); drawText()
+// wants UTF-8. Every stored byte is either plain ASCII or a Latin-1
+// Supplement codepoint (0x80-0xFF), so each needing encoding is always
+// exactly a 2-byte UTF-8 sequence -- worst case every column is accented,
+// hence the 2x+1 buffer.
+static void latin1RowToUtf8(const char* row, char* out, size_t outSize) {
+  size_t o = 0;
+  for (size_t i = 0; row[i] != '\0' && o + 3 < outSize; i++) {
+    const uint8_t b = (uint8_t)row[i];
+    if (b < 0x80) {
+      out[o++] = (char)b;
+    } else {
+      out[o++] = (char)(0xC0 | (b >> 6));
+      out[o++] = (char)(0x80 | (b & 0x3F));
+    }
+  }
+  out[o] = '\0';
 }
 
 static void drawTerminalContent() {
@@ -229,13 +292,15 @@ static void drawTerminalContent() {
            TERM_ROWS);
   renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y, banner);
   renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y + CELL_H, "READY.");
+  char utf8Row[TERM_COLS * 2 + 1];
   for (int r = 0; r < TYPE_ROWS; r++) {
     const int rowY = TERM_Y + (TYPE_ROW0 + r) * CELL_H;
     // Rows the keyboard overlay would cover are skipped while it's visible
     // -- no point drawing terminal content that's about to be painted over,
     // and it keeps the "what actually changed" area minimal for FAST_REFRESH.
     if (g_oskVisible && rowY >= OSK_Y) continue;
-    renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, rowY, g_typed[r]);
+    latin1RowToUtf8(g_typed[r], utf8Row, sizeof(utf8Row));
+    renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, rowY, utf8Row);
   }
   // Solid-block cursor at the next insertion point (only meaningful while
   // visible, i.e. not currently hidden under the keyboard overlay).

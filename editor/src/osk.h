@@ -33,6 +33,7 @@ static constexpr uint8_t OSK_MOD_ALT_LEFT = 0x04;
 // Keys a caller's callback typically needs to special-case rather than read
 // as a character (oskHidToChar() returns 0 for all of these except Enter,
 // which it maps to '\n').
+static constexpr uint8_t OSK_HID_ESCAPE = 0x29;
 static constexpr uint8_t OSK_HID_BACKSPACE = 0x2A;
 static constexpr uint8_t OSK_HID_LEFT = 0x50;
 static constexpr uint8_t OSK_HID_RIGHT = 0x4F;

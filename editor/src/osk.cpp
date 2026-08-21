@@ -20,7 +20,7 @@ struct KeyDef {
 // USB HID keyboard usage IDs this layout needs. Letters (0x04-0x1D, A-Z
 // alphabetical) and digits (0x1E-0x27, 1-9 then 0) are generated in the row
 // tables below rather than named individually.
-constexpr uint8_t HID_ESCAPE = 0x29;
+constexpr uint8_t HID_ESCAPE = OSK_HID_ESCAPE;
 constexpr uint8_t HID_ENTER = 0x28;
 constexpr uint8_t HID_BACKSPACE = OSK_HID_BACKSPACE;
 constexpr uint8_t HID_TAB = 0x2B;
@@ -100,13 +100,13 @@ const KeyDef kRow2[] = {
     {HID_ENTER, 4, 1, KeyKind::Normal, "Enter"},
 };
 
-// Row 3: Shift (7 half-units, was 6), Z-M, , . /, Shift. The extra
-// half-unit LShift gained comes out of / (2 half-units -> 1) rather than
-// the trailing gap, specifically to keep Right Shift and Up starting at the
-// SAME half-unit offset (26) they were at before -- see the Up-alignment
-// comment below; that alignment with row 4's Left/Down/Right (unchanged at
-// 26/28/30) mattered more than keeping every punctuation key visually
-// uniform.
+// Row 3: Shift (7 half-units), Z-M, , . / (back to its normal 2 half-units),
+// Up, Shift. Up and Right Shift moved one column left of an earlier draft
+// (which had / shrunk to 1 half-unit and Up/RShift after it) -- / is full
+// size again, Up sits right after it, and Right Shift shifts right of Up.
+// Aligns 3-wide with row 4 below: / over Left, Up over Down, RShift over
+// Right (all three pulled one half-unit left of the previous draft to make
+// that 3-column match, not just Up-over-Down alone).
 const KeyDef kRow3[] = {
     {0, 7, 1, KeyKind::Shift, "Shift"},
     {0x1D, 2, 1, KeyKind::Normal, nullptr}, {0x1B, 2, 1, KeyKind::Normal, nullptr},
@@ -114,26 +114,20 @@ const KeyDef kRow3[] = {
     {0x05, 2, 1, KeyKind::Normal, nullptr}, {0x11, 2, 1, KeyKind::Normal, nullptr},
     {0x10, 2, 1, KeyKind::Normal, nullptr},
     {HID_COMMA, 2, 1, KeyKind::Normal, nullptr}, {HID_PERIOD, 2, 1, KeyKind::Normal, nullptr},
-    {HID_SLASH, 1, 1, KeyKind::Normal, nullptr},
-    // Right Shift shrinks to 2 half-units (from 6) to make room for Up here,
-    // in the inverted-T arrow cluster's classic position: directly above
-    // Down (row 4 below aligns Left/Down/Right at the same half-unit
-    // offsets, 26/28/30, so Up at 28 lines up with Down exactly). The
-    // trailing 2 half-units (30-32, above Right) are deliberately left
-    // undeclared -- real keyboards leave that same cell blank too.
-    {0, 2, 1, KeyKind::Shift, "Shift"},
+    {HID_SLASH, 2, 1, KeyKind::Normal, nullptr},
     {HID_UP, 2, 1, KeyKind::Normal, "^"},
+    {0, 2, 1, KeyKind::Shift, "Shift"},
 };
 
 // Row 4: Ctrl (5 half-units, was 4 -- joins the same cascade the other
-// rows' left-edge keys got), Alt, Space, Left/Down/Right (Up moved to row 3
-// above, aligned with Down -- see kRow3's comment). ` moved to row 0
-// (alongside Esc); this row's Ctrl absorbing its own extra half-unit plus
-// Alt being new both come out of Space, which still has plenty of room.
+// rows' left-edge keys got), Alt, Space, Left/Down/Right -- pulled one
+// half-unit left of an earlier draft (Space 18->17) so the whole cluster
+// lines up 3-wide with row 3's /, Up, Shift above it (see kRow3's comment).
+// ` moved to row 0 (alongside Esc).
 const KeyDef kRow4[] = {
     {0, 5, 1, KeyKind::Ctrl, "Ctrl"},
     {0, 3, 1, KeyKind::Alt, "Alt"},
-    {HID_SPACE, 18, 1, KeyKind::Normal, ""},
+    {HID_SPACE, 17, 1, KeyKind::Normal, ""},
     {HID_LEFT, 2, 1, KeyKind::Normal, "<"},
     {HID_DOWN, 2, 1, KeyKind::Normal, "v"},
     {HID_RIGHT, 2, 1, KeyKind::Normal, ">"},
@@ -276,16 +270,27 @@ void oskDraw() {
                           (k.kind == KeyKind::Alt && g_altArmed) ||
                           (k.kind == KeyKind::CapsLock && g_capsLockOn);
 
+      // Two-tier fill: functional keys (anything with a fixed multi-char
+      // label -- Esc/Tab/Caps/Shift/Ctrl/Alt/Enter/Bksp/Space/arrows -- via
+      // kind != Normal or a non-null label) get the darker of the two grays
+      // GfxRenderer offers; plain letters/digits/symbols (kind == Normal,
+      // label == nullptr) get the lighter one. Both are dither patterns
+      // (DarkGray ~50% pixel density, LightGray ~25%) that work in plain BW
+      // mode with no grayscale render pass -- not literal continuous gray
+      // levels, so a dense checkerboard immediately behind small text can
+      // read as visually busier than a real gray keycap would; worth a
+      // second look on the physical panel specifically for that.
+      const bool isFunctional = k.kind != KeyKind::Normal || k.label != nullptr;
+      const Color fillColor = isFunctional ? Color::DarkGray : Color::LightGray;
+
       const int kx = rect.x + kInset, ky = rect.y + kInset;
       const int kw = rect.w - 2 * kInset, kh = rect.h - 2 * kInset;
       if (armed) {
         g_renderer->fillRoundedRect(kx, ky, kw, kh, kCornerRadius, Color::Black);
       } else {
-        // Light-gray fill (a sparse 1-in-4-pixel dither -- GfxRenderer's
-        // Color::LightGray works this way even in plain BW mode, no
-        // grayscale render pass needed) plus a black outline on top, rather
-        // than a flat white key on a white background.
-        g_renderer->fillRoundedRect(kx, ky, kw, kh, kCornerRadius, Color::LightGray);
+        // Gray fill (see above) plus a black outline on top, rather than a
+        // flat white key on a white background.
+        g_renderer->fillRoundedRect(kx, ky, kw, kh, kCornerRadius, fillColor);
         g_renderer->drawRoundedRect(kx, ky, kw, kh, kBorderWidth, kCornerRadius, true);
       }
 

@@ -1,35 +1,30 @@
 // MicroBASIC-PaperS3 -- milestones 1-3: hardware bring-up, SCREEN font
 // legibility, on-screen keyboard.
 //
-// Milestones 1 (display, GT911 touch, SD card, 4-corner tap mapping) and 2
-// (SCREEN 0/1 fonts, confirmed legible on the physical panel after fixing a
-// row-packing bug in the font emitter) are done -- see the project README
-// and git log.
+// Milestone 1 (display, GT911 touch, SD card, 4-corner tap mapping) and
+// milestone 2 (SCREEN fonts, confirmed legible after fixing a row-packing
+// bug in the font emitter) are done -- see the project README and git log.
 //
-// This build demonstrates the on-screen keyboard (osk.cpp/osk.h): the
-// keyboard area renders real touch keys, and typing echoes into the
-// terminal grid using SCREEN 1 (11x22). input_handler.cpp (the real
-// enqueueKeyEvent() the ported editor will eventually use) isn't ported
-// yet, so osk.cpp is deliberately standalone -- it calls a plain callback
-// with (HID keycode, HID modifier byte), the exact wire format
-// enqueueKeyEvent() already expects on the X4, so this whole component
-// carries over unchanged once that file lands. See osk.h's top comment.
+// Landscape, not portrait: the first portrait build (540 wide) worked but
+// felt cramped on real hardware -- both the terminal glyphs and the
+// keyboard keys read as too small. Landscape (960x540, matching the panel's
+// native rotation=0 orientation -- GfxRenderer::LandscapeCounterClockwise is
+// documented as exactly that, no further rotation on top) uses the full
+// panel width for both. The terminal's 64x18 grid at cell 15x30 divides
+// BOTH panel axes exactly (960/15=64, 540/30=18) with zero margin anywhere.
 //
-// Layout: a 48x24 character terminal over a fixed on-screen keyboard:
+// The on-screen keyboard is no longer a permanently docked strip: with the
+// terminal now claiming the whole panel, the keyboard is a toggleable
+// OVERLAY covering the bottom 8 terminal rows when shown (see the "KBD"
+// button, top-right). This matches the intended real policy -- a paired
+// BLE keyboard is preferred, and the on-screen keyboard is a reserve you
+// summon only when you need it -- though nothing here actually detects a
+// BLE keyboard yet (ble_keyboard.cpp isn't ported); the toggle demonstrates
+// the show/hide mechanism the real policy will drive later.
 //
-//     540 x 960 portrait
-//     +-----------------+
-//     | 6|  48 x 24   |6|   terminal 528 x 528, cell 11 x 22
-//     |  |  cell 11x22| |   (48*11 = 528, 24*22 = 528; 6px side margins)
-//     +-----------------+
-//     |    keyboard     |   540 x 432
-//     +-----------------+
-//
-// Touch corner-mapping and diagnostic status text (panel size, SD/touch
-// status) were milestone 1's own on-screen checks -- both are confirmed and
-// have been folded into Serial-only diagnostics (see printDiagnostics())
-// rather than kept on the physical screen, which the keyboard now fully
-// occupies.
+// osk.cpp itself is unchanged from the portrait build: it takes its region
+// as plain parameters, so widening it to the full 960px and repositioning
+// it as an overlay was a call-site change only, not a component change.
 
 #include <Arduino.h>
 #include <FontCacheManager.h>
@@ -44,8 +39,7 @@
 #include <builtinFonts/notosans_12_regular.h>
 #include <builtinFonts/notosans_14_regular.h>
 #include <builtinFonts/notosans_16_bold.h>
-#include <builtinFonts/unscii_11x22.h>
-#include <builtinFonts/unscii_22x44.h>
+#include <builtinFonts/unscii_15x30.h>
 
 #include "osk.h"
 
@@ -64,30 +58,42 @@
 #include <cstring>
 
 // --- decided layout (see the header comment) -------------------------------
-static constexpr int PANEL_W = 540;  // logical, portrait
-static constexpr int PANEL_H = 960;
-static constexpr int TERM_COLS = 48;
-static constexpr int TERM_ROWS = 24;
-static constexpr int CELL_W = 11;
-static constexpr int CELL_H = 22;
-static constexpr int TERM_W = TERM_COLS * CELL_W;  // 528
-static constexpr int TERM_H = TERM_ROWS * CELL_H;  // 528
-static constexpr int TERM_X = (PANEL_W - TERM_W) / 2;  // 6
+static constexpr int PANEL_W = 960;  // logical, landscape (native panel orientation)
+static constexpr int PANEL_H = 540;
+static constexpr int TERM_COLS = 64;
+static constexpr int TERM_ROWS = 18;
+static constexpr int CELL_W = 15;
+static constexpr int CELL_H = 30;
+static constexpr int TERM_W = TERM_COLS * CELL_W;  // 960 -- exactly PANEL_W
+static constexpr int TERM_H = TERM_ROWS * CELL_H;  // 540 -- exactly PANEL_H
+static constexpr int TERM_X = 0;
 static constexpr int TERM_Y = 0;
-static constexpr int KBD_Y = TERM_Y + TERM_H;      // 528
-static constexpr int KBD_H = PANEL_H - KBD_Y;      // 432
 
-static_assert(TERM_W == 528 && TERM_H == 528, "terminal geometry drifted");
-static_assert(KBD_H == 432, "keyboard geometry drifted");
+static_assert(TERM_W == PANEL_W && TERM_H == PANEL_H, "terminal should fill the panel exactly");
+
+// On-screen keyboard overlay: covers the bottom OSK_ROWS terminal rows when
+// shown, full panel width. 8 rows leaves 10 rows of terminal visible above
+// it -- a first-draft split, not yet judged on real hardware.
+static constexpr int OSK_ROWS = 8;
+static constexpr int OSK_H = OSK_ROWS * CELL_H;  // 240
+static constexpr int OSK_Y = PANEL_H - OSK_H;     // 300
+static constexpr int OSK_X = 0;
+static constexpr int OSK_W = PANEL_W;
+
+// Toggle button: top-right, 6 terminal columns wide x 1 row tall.
+static constexpr int TOGGLE_COLS = 6;
+static constexpr int TOGGLE_W = TOGGLE_COLS * CELL_W;  // 90
+static constexpr int TOGGLE_H = CELL_H;                // 30
+static constexpr int TOGGLE_X = PANEL_W - TOGGLE_W;
+static constexpr int TOGGLE_Y = 0;
 
 static constexpr int FONT_UI = -1559651934;     // notosans 12
 static constexpr int FONT_BODY = -1014561631;   // notosans 14
 static constexpr int FONT_TITLE = -1422711852;  // notosans 16
-// Same numeric IDs the ported config.h used on the X4, kept for continuity
-// when that file eventually comes across; only two SCREEN sizes exist here
-// (see README's "SCREEN modes" table) so MONO_2/MONO_3 are not defined.
-static constexpr int FONT_SCREEN_MONO_0 = -2000000001;  // SCREEN 0, 24 col, cell 22x44
-static constexpr int FONT_SCREEN_MONO_1 = -2000000002;  // SCREEN 1, 48 col, cell 11x22 (default)
+// Same numeric ID convention the ported config.h used on the X4. Only one
+// SCREEN size exists for landscape so far (see README's "SCREEN modes"
+// table); MONO_0 (the portrait-era zoomed size) is not wired up here.
+static constexpr int FONT_SCREEN_MONO_1 = -2000000002;  // SCREEN 1, 64 col, cell 15x30 (default)
 
 // `display` is a global owned by the hal (declared extern in HalDisplay.h,
 // defined in HalDisplay.cpp) -- do not shadow it with a local instance.
@@ -109,14 +115,13 @@ static EpdFontFamily uiFamily(&uiRegularFont);
 static EpdFontFamily bodyFamily(&bodyRegularFont);
 static EpdFontFamily titleFamily(&titleBoldFont);
 
-// MicroBASIC's own SCREEN fonts -- uncompressed, no FontDecompressor needed.
-static EpdFont screenMono0Font(&unscii_22x44);
-static EpdFont screenMono1Font(&unscii_11x22);
-static EpdFontFamily screenMono0Family(&screenMono0Font);
+// MicroBASIC's own SCREEN font -- uncompressed, no FontDecompressor needed.
+static EpdFont screenMono1Font(&unscii_15x30);
 static EpdFontFamily screenMono1Family(&screenMono1Font);
 
 static char sdLine[96] = "SD: not probed";
 static bool firstPaintDone = false;
+static bool g_oskVisible = false;
 
 static void probeSdCard() {
   if (!sdCard.begin()) {
@@ -137,11 +142,11 @@ static void probeSdCard() {
 }
 
 // --- typing echo buffer -----------------------------------------------
-// Rows 0-1 of the terminal are a fixed banner; rows 2-23 (22 rows) are a
+// Rows 0-1 of the terminal are a fixed banner; rows 2-17 (16 rows) are a
 // live scroll buffer fed by the on-screen keyboard, proving the whole
 // osk.cpp -> HID code -> character -> terminal loop end to end.
 static constexpr int TYPE_ROW0 = 2;
-static constexpr int TYPE_ROWS = TERM_ROWS - TYPE_ROW0;  // 22
+static constexpr int TYPE_ROWS = TERM_ROWS - TYPE_ROW0;  // 16
 static char g_typed[TYPE_ROWS][TERM_COLS + 1];
 static int g_curRow = 0, g_curCol = 0;
 
@@ -215,22 +220,46 @@ static void onOskKey(uint8_t hidCode, uint8_t modifiers) {
 }
 
 static void drawTerminalContent() {
-  renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y, "MicroBASIC PaperS3  SCREEN 1  48x24");
+  char banner[TERM_COLS + 1];
+  snprintf(banner, sizeof(banner), "MicroBASIC PaperS3   SCREEN 1  %dx%d", TERM_COLS, TERM_ROWS);
+  renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y, banner);
   renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y + CELL_H, "READY.");
   for (int r = 0; r < TYPE_ROWS; r++) {
-    renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y + (TYPE_ROW0 + r) * CELL_H, g_typed[r]);
+    const int rowY = TERM_Y + (TYPE_ROW0 + r) * CELL_H;
+    // Rows the keyboard overlay would cover are skipped while it's visible
+    // -- no point drawing terminal content that's about to be painted over,
+    // and it keeps the "what actually changed" area minimal for FAST_REFRESH.
+    if (g_oskVisible && rowY >= OSK_Y) continue;
+    renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, rowY, g_typed[r]);
   }
-  // Solid-block cursor at the next insertion point -- always over blank
-  // space (nothing to occlude), matching the emitter's own "cursor drawn
-  // with fillRect() directly, not through drawText()" convention.
-  renderer.fillRect(TERM_X + g_curCol * CELL_W, TERM_Y + (TYPE_ROW0 + g_curRow) * CELL_H, CELL_W,
-                     CELL_H, true);
+  // Solid-block cursor at the next insertion point (only meaningful while
+  // visible, i.e. not currently hidden under the keyboard overlay).
+  const int cursorY = TERM_Y + (TYPE_ROW0 + g_curRow) * CELL_H;
+  if (!(g_oskVisible && cursorY >= OSK_Y)) {
+    renderer.fillRect(TERM_X + g_curCol * CELL_W, cursorY, CELL_W, CELL_H, true);
+  }
+}
+
+static void drawToggleButton() {
+  const int inset = 2;
+  renderer.drawRect(TOGGLE_X + inset, TOGGLE_Y + inset, TOGGLE_W - 2 * inset, TOGGLE_H - 2 * inset,
+                     true);
+  const char* label = g_oskVisible ? "Hide" : "KBD";
+  const int tw = renderer.getTextWidth(FONT_UI, label);
+  const int tx = TOGGLE_X + (TOGGLE_W - tw) / 2;
+  const int ty = TOGGLE_Y + (TOGGLE_H - renderer.getLineHeight(FONT_UI)) / 2;
+  renderer.drawText(FONT_UI, tx, ty, label);
+}
+
+static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
+  return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
 }
 
 static void drawScreen() {
   renderer.clearScreen();
   drawTerminalContent();
-  oskDraw();
+  drawToggleButton();
+  if (g_oskVisible) oskDraw();
 
   Serial.printf("[paint] displayBuffer(%s) ...\n", firstPaintDone ? "FAST" : "FULL");
   Serial.flush();
@@ -266,9 +295,8 @@ void setup() {
 
 STEP("renderer.begin");
   renderer.begin();
-  // Portrait is the decided orientation: the terminal sits above a fixed
-  // keyboard, which only works on the long axis.
-  renderer.setOrientation(GfxRenderer::Portrait);
+  // Landscape, native panel orientation -- see this file's header comment.
+  renderer.setOrientation(GfxRenderer::LandscapeCounterClockwise);
 
 STEP("fonts");
   fontDecompressor.init();
@@ -278,7 +306,6 @@ STEP("fonts");
   renderer.insertFont(FONT_UI, uiFamily);
   renderer.insertFont(FONT_BODY, bodyFamily);
   renderer.insertFont(FONT_TITLE, titleFamily);
-  renderer.insertFont(FONT_SCREEN_MONO_0, screenMono0Family);
   renderer.insertFont(FONT_SCREEN_MONO_1, screenMono1Family);
 
 STEP("input.begin");
@@ -292,7 +319,7 @@ STEP("probeSdCard");
 
 STEP("osk.init");
   typedGridReset();
-  oskInit(renderer, FONT_UI, 0, KBD_Y, PANEL_W, KBD_H, onOskKey);
+  oskInit(renderer, FONT_UI, OSK_X, OSK_Y, OSK_W, OSK_H, onOskKey);
 
 STEP("drawScreen");
   drawScreen();
@@ -323,12 +350,15 @@ void loop() {
     int lx, ly;
     renderer.tapToLogical(nx, ny, lx, ly);
     Serial.printf("tap norm(%.3f, %.3f) -> logical(%d, %d)\n", nx, ny, lx, ly);
-    // oskHandleTap() returns true for any tap inside the keyboard area
-    // (a modifier toggle or a normal key both need a redraw: the former to
-    // show the key inverted, the latter to show the typed character and
-    // moved cursor) and false outside it, where there is currently nothing
-    // else to handle.
-    if (oskHandleTap(lx, ly)) {
+
+    if (tapInRect(lx, ly, TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H)) {
+      g_oskVisible = !g_oskVisible;
+      drawScreen();
+    } else if (g_oskVisible && oskHandleTap(lx, ly)) {
+      // oskHandleTap() bounds-checks against the region passed to oskInit()
+      // and returns false outside it; gated on g_oskVisible too so a tap
+      // over the (currently hidden) overlay's fixed region doesn't get
+      // misread as a key press while real terminal content is shown there.
       drawScreen();
     }
   }

@@ -171,9 +171,16 @@ def main():
 
     jobs = [
         ("unscii_11x22", UnsciiScreenFont(u16, 8, 16, 11, 22), 11, 22,
-         "SCREEN 1 (48-col, default): area-coverage resize (1.375x) + stem-width cap + cedilla fix."),
+         "Portrait-era SCREEN 1 (48-col): area-coverage resize (1.375x) + stem-width cap + "
+         "cedilla fix. Superseded as the active terminal font by unscii_15x30 (landscape), kept "
+         "generated in case portrait comes back for some other mode."),
         ("unscii_22x44", UnsciiScreenFont(u16, 8, 16, 22, 44), 22, 44,
-         "SCREEN 0 (24-col): area-coverage resize (2.75x) + stem-width cap + cedilla fix."),
+         "Portrait-era SCREEN 0 (24-col): area-coverage resize (2.75x) + stem-width cap + "
+         "cedilla fix. See unscii_11x22's note above."),
+        ("unscii_15x30", UnsciiScreenFont(u16, 8, 16, 15, 30), 15, 30,
+         "SCREEN 1 landscape (64-col, default): area-coverage resize (1.875x) + stem-width cap + "
+         "cedilla fix. 960/15=64 cols, 540/30=18 rows -- both exact, the full 960x540 landscape "
+         "panel with zero margin on either axis."),
     ]
 
     for name, font, cell_w, cell_h, note in jobs:

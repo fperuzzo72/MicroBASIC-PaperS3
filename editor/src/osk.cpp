@@ -264,6 +264,38 @@ bool rectContains(const KeyRect& r, int x, int y) {
   return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 }
 
+// "See-through" key backgrounds: GfxRenderer::fillRoundedRect(..., Color)
+// looks sparse (its LightGray/DarkGray are dither patterns, not literal
+// gray) but isn't actually transparent -- its dither still calls
+// drawPixel() for EVERY pixel in the rect, explicitly whiting out the ~75%
+// or ~50% it doesn't blacken. That erases whatever was underneath (the
+// terminal content this overlay covers) even in the "light" areas.
+//
+// These draw ONLY the black dots and skip everything else outright -- no
+// drawPixel(..., false) call at all for the gaps -- so whatever was already
+// in the framebuffer there (terminal text) stays visible through them.
+// Same two dot densities/patterns as GfxRenderer's own LightGray (25%,
+// x%2==0 && y%2==0) and DarkGray (50%, (x+y)%2==0), just non-destructive.
+// Corner rounding is skipped for the dots themselves (they're interior to
+// the already-rounded border drawn separately) -- at this dot spacing the
+// square-vs-rounded difference in the four corner pixels isn't visible.
+void sparseFillLight(int x, int y, int w, int h) {
+  for (int py = y; py < y + h; py++) {
+    if (py % 2 != 0) continue;
+    for (int px = x; px < x + w; px++) {
+      if (px % 2 == 0) g_renderer->drawPixel(px, py, true);
+    }
+  }
+}
+
+void sparseFillDark(int x, int y, int w, int h) {
+  for (int py = y; py < y + h; py++) {
+    for (int px = x; px < x + w; px++) {
+      if ((px + py) % 2 == 0) g_renderer->drawPixel(px, py, true);
+    }
+  }
+}
+
 }  // namespace
 
 void oskDraw() {
@@ -292,25 +324,29 @@ void oskDraw() {
 
       // Two-tier fill: functional keys (anything with a fixed multi-char
       // label -- Esc/Tab/Caps/Shift/Ctrl/Alt/Enter/Bksp/Space/arrows -- via
-      // kind != Normal or a non-null label) get the darker of the two grays
-      // GfxRenderer offers; plain letters/digits/symbols (kind == Normal,
-      // label == nullptr) get the lighter one. Both are dither patterns
-      // (DarkGray ~50% pixel density, LightGray ~25%) that work in plain BW
-      // mode with no grayscale render pass -- not literal continuous gray
-      // levels, so a dense checkerboard immediately behind small text can
-      // read as visually busier than a real gray keycap would; worth a
-      // second look on the physical panel specifically for that.
+      // kind != Normal or a non-null label) get the denser of the two dot
+      // patterns; plain letters/digits/symbols (kind == Normal, label ==
+      // nullptr) get the sparser one. Both are the SAME densities
+      // GfxRenderer's own LightGray/DarkGray use, but drawn as see-through
+      // dots (sparseFillLight/Dark, above) rather than opaque dithered
+      // fills, so the terminal content this overlay covers stays partly
+      // visible through unarmed keys.
       const bool isFunctional = k.kind != KeyKind::Normal || k.label != nullptr;
-      const Color fillColor = isFunctional ? Color::DarkGray : Color::LightGray;
 
       const int kx = rect.x + kInset, ky = rect.y + kInset;
       const int kw = rect.w - 2 * kInset, kh = rect.h - 2 * kInset;
       if (armed) {
+        // A pressed key stays fully opaque black -- blocking the view here
+        // is expected, the same way a real physical key does under your
+        // finger, and it keeps the white label text legible against a
+        // guaranteed-solid background.
         g_renderer->fillRoundedRect(kx, ky, kw, kh, kCornerRadius, Color::Black);
       } else {
-        // Gray fill (see above) plus a black outline on top, rather than a
-        // flat white key on a white background.
-        g_renderer->fillRoundedRect(kx, ky, kw, kh, kCornerRadius, fillColor);
+        if (isFunctional) {
+          sparseFillDark(kx, ky, kw, kh);
+        } else {
+          sparseFillLight(kx, ky, kw, kh);
+        }
         g_renderer->drawRoundedRect(kx, ky, kw, kh, kBorderWidth, kCornerRadius, true);
       }
 

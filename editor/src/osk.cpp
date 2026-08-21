@@ -69,34 +69,36 @@ const KeyDef kRow1[] = {
     {HID_BACKSLASH, 2, 1, KeyKind::Normal, nullptr},
 };
 
-// Row 2: Caps Lock, A-L, ; ', then Enter -- ANSI/ISO position, end of the
-// home row -- spanning down into row 3 (rowSpan=2), like the tall Enter key
-// on older/ISO keyboards. Row 3 below deliberately does NOT declare
-// anything for those same rightmost 3 units; this key's rect alone covers
-// both rows, and oskDraw()/oskHandleTap() size and hit-test it accordingly.
+// Row 2: Caps Lock, A-L, ; ', Enter -- ANSI/ISO position, end of the home
+// row, one row tall (an earlier draft spanned it into row 3 for a tall
+// ISO-style Enter; on the real panel that read as an oversized, out-of-
+// place block, not as "an old keyboard's Enter key", so back to one row).
+// Caps is 3 units, wider than Row 1's Tab (2 units) -- the physical-
+// keyboard row stagger (each row's first letter sits a little further
+// right than the row above, not stacked in a rigid vertical grid) comes
+// entirely from these left-edge keys' widths increasing row to row, the
+// same way it does on a real keyboard: no separate offset needed.
 const KeyDef kRow2[] = {
-    {0, 2, 1, KeyKind::CapsLock, "Caps"},
+    {0, 3, 1, KeyKind::CapsLock, "Caps"},
     {0x04, 1, 1, KeyKind::Normal, nullptr}, {0x16, 1, 1, KeyKind::Normal, nullptr},
     {0x07, 1, 1, KeyKind::Normal, nullptr}, {0x09, 1, 1, KeyKind::Normal, nullptr},
     {0x0A, 1, 1, KeyKind::Normal, nullptr}, {0x0B, 1, 1, KeyKind::Normal, nullptr},
     {0x0D, 1, 1, KeyKind::Normal, nullptr}, {0x0E, 1, 1, KeyKind::Normal, nullptr},
     {0x0F, 1, 1, KeyKind::Normal, nullptr},
     {HID_SEMICOLON, 1, 1, KeyKind::Normal, nullptr}, {HID_APOSTROPHE, 1, 1, KeyKind::Normal, nullptr},
-    {HID_ENTER, 3, 2, KeyKind::Normal, "Enter"},
+    {HID_ENTER, 2, 1, KeyKind::Normal, "Enter"},
 };
 
-// Row 3: Shift, Z-M, , . /, Shift. Only 13 units of its own -- the
-// remaining 3 (matching row 2's Enter column span exactly) are left
-// undeclared on purpose; see kRow2's comment.
+// Row 3: Shift (4 units -- continuing row 2's stagger), Z-M, , . /, Shift.
 const KeyDef kRow3[] = {
-    {0, 2, 1, KeyKind::Shift, "Shift"},
+    {0, 4, 1, KeyKind::Shift, "Shift"},
     {0x1D, 1, 1, KeyKind::Normal, nullptr}, {0x1B, 1, 1, KeyKind::Normal, nullptr},
     {0x06, 1, 1, KeyKind::Normal, nullptr}, {0x19, 1, 1, KeyKind::Normal, nullptr},
     {0x05, 1, 1, KeyKind::Normal, nullptr}, {0x11, 1, 1, KeyKind::Normal, nullptr},
     {0x10, 1, 1, KeyKind::Normal, nullptr},
     {HID_COMMA, 1, 1, KeyKind::Normal, nullptr}, {HID_PERIOD, 1, 1, KeyKind::Normal, nullptr},
     {HID_SLASH, 1, 1, KeyKind::Normal, nullptr},
-    {0, 1, 1, KeyKind::Shift, "Shift"},
+    {0, 2, 1, KeyKind::Shift, "Shift"},
 };
 
 // Row 4: Ctrl, `, Space, and the full arrow cluster (Up/Down now fit).

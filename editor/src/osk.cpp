@@ -49,15 +49,23 @@ constexpr uint8_t HID_DOWN = 0x51;
 // on the physical panel.
 constexpr int kUnitsPerRow = 32;
 
-// Row 0: Esc, ` ~ (there is no separate function-key row on this 5-row
-// layout, so Esc takes the top-left slot the way compact/tenkeyless boards
-// do -- functionally important, not just conventional: input_handler.cpp
-// treats Escape and Ctrl+C as BASIC's two "stop the program" gestures),
-// digits, - =, Backspace. Esc+` together are 4 half-units, one half-unit
-// less than row 1's Tab (5) -- see kRow1's comment for why that specific
-// spacing was picked, the same uniform cascade this row now joins.
+// Row F: Esc alone, in its own row above everything else -- the way a real
+// keyboard's function row sits above the main block, but without actually
+// adding F1-F12 (which would clutter this small a panel for little benefit
+// here). Same height as every other row (kRowCount grew to 6, so every
+// row's share of the fixed OSK_H budget shrank a little to make room) --
+// simpler than giving this one row a different height for one key. Nothing
+// else lives on this row; the rest of its width is blank on purpose,
+// matching how Esc sits alone in a physical keyboard's corner.
+const KeyDef kRowEsc[] = {
+    {HID_ESCAPE, 4, 1, KeyKind::Normal, "Esc"},
+};
+
+// Row 0: ` ~, digits, - =, Backspace. Esc used to open this row (see
+// kRowEsc above for why it moved out); Backspace absorbs the 2 half-units
+// that freed up, on top of its own earlier size -- both are the "growing
+// Bksp" trade for Esc leaving.
 const KeyDef kRow0[] = {
-    {HID_ESCAPE, 2, 1, KeyKind::Normal, "Esc"},
     {HID_GRAVE, 2, 1, KeyKind::Normal, nullptr},
     {0x1E, 2, 1, KeyKind::Normal, nullptr}, {0x1F, 2, 1, KeyKind::Normal, nullptr},
     {0x20, 2, 1, KeyKind::Normal, nullptr}, {0x21, 2, 1, KeyKind::Normal, nullptr},
@@ -65,39 +73,43 @@ const KeyDef kRow0[] = {
     {0x24, 2, 1, KeyKind::Normal, nullptr}, {0x25, 2, 1, KeyKind::Normal, nullptr},
     {0x26, 2, 1, KeyKind::Normal, nullptr}, {0x27, 2, 1, KeyKind::Normal, nullptr},
     {HID_MINUS, 2, 1, KeyKind::Normal, nullptr}, {HID_EQUALS, 2, 1, KeyKind::Normal, nullptr},
-    {HID_BACKSPACE, 4, 1, KeyKind::Normal, "Bksp"},
+    {HID_BACKSPACE, 6, 1, KeyKind::Normal, "Bksp"},
 };
 
-// Row 1: Tab, Q-P, [ ] \. Tab is 5 half-units (was 4) -- the whole Tab/Caps/
-// Shift(L)/Ctrl cascade below shifted up by one half-unit from an earlier
-// draft so row 0's new Esc+` (4 half-units) lines up as the row above it,
-// continuing the SAME uniform one-half-unit-per-row step (row0=4, row1=5,
-// row2=6, row3=7) instead of the uneven jump an earlier draft had. Backslash
-// gives up the half-unit Tab gained, same "grow the left edge, shrink the
-// right edge, same row total" trade every row below makes too.
+// Row 1: Tab (4 half-units, back down from 5 -- the extra half-unit it had
+// gained was specifically to stay aligned under Esc+`; now that Esc has
+// its own row above, that reason is gone), Q-P, [ ] \ (back to a normal 2
+// half-units, was shrunk to 3), then a small unlabeled "Enter" key filling
+// the 2 half-units backslash gave up. That notch sits directly above the
+// RIGHT part of row 2's (wider) Enter key below -- see kRow2's comment --
+// so together the two pieces read as one L-shaped/ISO-style Enter reaching
+// up into this row, without the earlier full-width two-row-tall Enter that
+// looked oversized on the physical panel.
 const KeyDef kRow1[] = {
-    {HID_TAB, 5, 1, KeyKind::Normal, "Tab"},
+    {HID_TAB, 4, 1, KeyKind::Normal, "Tab"},
     {0x14, 2, 1, KeyKind::Normal, nullptr}, {0x1A, 2, 1, KeyKind::Normal, nullptr},
     {0x08, 2, 1, KeyKind::Normal, nullptr}, {0x15, 2, 1, KeyKind::Normal, nullptr},
     {0x17, 2, 1, KeyKind::Normal, nullptr}, {0x1C, 2, 1, KeyKind::Normal, nullptr},
     {0x18, 2, 1, KeyKind::Normal, nullptr}, {0x0C, 2, 1, KeyKind::Normal, nullptr},
     {0x12, 2, 1, KeyKind::Normal, nullptr}, {0x13, 2, 1, KeyKind::Normal, nullptr},
     {HID_LBRACKET, 2, 1, KeyKind::Normal, nullptr}, {HID_RBRACKET, 2, 1, KeyKind::Normal, nullptr},
-    {HID_BACKSLASH, 3, 1, KeyKind::Normal, nullptr},
+    {HID_BACKSLASH, 2, 1, KeyKind::Normal, nullptr},
+    {HID_ENTER, 2, 1, KeyKind::Normal, nullptr},  // Enter's notch -- see comment above
 };
 
-// Row 2: Caps Lock (6 half-units, was 5), A-L, ; ', Enter (ANSI
-// end-of-home-row position, one row tall). Enter gives up the half-unit
-// Caps gained.
+// Row 2: Caps Lock (5 half-units, back down from 6, for the same reason
+// Tab shrank -- see kRow1's comment), A-L, ; ', Enter (5 half-units, up
+// from 4 -- the main, labeled body of the L-shaped Enter; its right 2
+// half-units sit directly under row 1's unlabeled notch above).
 const KeyDef kRow2[] = {
-    {0, 6, 1, KeyKind::CapsLock, "Caps"},
+    {0, 5, 1, KeyKind::CapsLock, "Caps"},
     {0x04, 2, 1, KeyKind::Normal, nullptr}, {0x16, 2, 1, KeyKind::Normal, nullptr},
     {0x07, 2, 1, KeyKind::Normal, nullptr}, {0x09, 2, 1, KeyKind::Normal, nullptr},
     {0x0A, 2, 1, KeyKind::Normal, nullptr}, {0x0B, 2, 1, KeyKind::Normal, nullptr},
     {0x0D, 2, 1, KeyKind::Normal, nullptr}, {0x0E, 2, 1, KeyKind::Normal, nullptr},
     {0x0F, 2, 1, KeyKind::Normal, nullptr},
     {HID_SEMICOLON, 2, 1, KeyKind::Normal, nullptr}, {HID_APOSTROPHE, 2, 1, KeyKind::Normal, nullptr},
-    {HID_ENTER, 4, 1, KeyKind::Normal, "Enter"},
+    {HID_ENTER, 5, 1, KeyKind::Normal, "Enter"},
 };
 
 // Row 3: Shift (7 half-units), Z-M, , . / (back to its normal 2 half-units),
@@ -107,6 +119,13 @@ const KeyDef kRow2[] = {
 // Aligns 3-wide with row 4 below: / over Left, Up over Down, RShift over
 // Right (all three pulled one half-unit left of the previous draft to make
 // that 3-column match, not just Up-over-Down alone).
+//
+// Deliberately UNCHANGED by the row 0-2 rework above (Esc moving out,
+// Tab/Caps shrinking, Enter growing): shrinking Left Shift to match would
+// shift everything after it and break the / -> Left / Up -> Down / RShift
+// -> Right alignment above without a specific replacement width to aim
+// for, so this row (and row 4) is left exactly as it was rather than
+// guessed at.
 const KeyDef kRow3[] = {
     {0, 7, 1, KeyKind::Shift, "Shift"},
     {0x1D, 2, 1, KeyKind::Normal, nullptr}, {0x1B, 2, 1, KeyKind::Normal, nullptr},
@@ -139,6 +158,7 @@ struct Row {
 };
 
 const Row kRows[] = {
+    {kRowEsc, sizeof(kRowEsc) / sizeof(kRowEsc[0])},
     {kRow0, sizeof(kRow0) / sizeof(kRow0[0])},
     {kRow1, sizeof(kRow1) / sizeof(kRow1[0])},
     {kRow2, sizeof(kRow2) / sizeof(kRow2[0])},

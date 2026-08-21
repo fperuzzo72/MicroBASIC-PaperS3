@@ -15,7 +15,7 @@
 //
 // The on-screen keyboard is no longer a permanently docked strip: with the
 // terminal now claiming the whole panel, the keyboard is a toggleable
-// OVERLAY covering the bottom 8 terminal rows when shown (see the "KBD"
+// OVERLAY covering the bottom 10 terminal rows when shown (see the "KBD"
 // button, top-right). This matches the intended real policy -- a paired
 // BLE keyboard is preferred, and the on-screen keyboard is a reserve you
 // summon only when you need it -- though nothing here actually detects a
@@ -93,10 +93,16 @@ static constexpr int FONT_UI = -1559651934;     // notosans 12
 static constexpr int FONT_BODY = -1014561631;   // notosans 14
 static constexpr int FONT_TITLE = -1422711852;  // notosans 16
 static constexpr int FONT_SMALL = -1246724383;  // ubuntu 10 (X4's own UI_10_FONT_ID)
-// Same numeric ID convention the ported config.h used on the X4. Only one
-// SCREEN size exists for landscape so far (see README's "SCREEN modes"
-// table); MONO_0 (the portrait-era zoomed size) is not wired up here.
-static constexpr int FONT_SCREEN_MONO_1 = -2000000002;  // SCREEN 1, 64 col, cell 15x30 (default)
+// Same numeric ID convention (and column counts) the ported config.h used
+// on the X4: MONO_0=32col, MONO_1=48col, MONO_2=64col, MONO_3=80col. All
+// four landscape font assets are generated (research/fonts/tools/
+// emit_epdfont_header.py), but only MONO_2 is registered below -- the X4
+// itself boots into SCREEN_MONO_1 (48col) because that's the readable
+// default at the X4's panel size; this device has enough room that 64col
+// is the better default, so it boots straight into MONO_2. The other
+// three aren't wired into the renderer yet since nothing here can switch
+// SCREEN modes at runtime (no BASIC interpreter in this bring-up).
+static constexpr int FONT_SCREEN_MONO_2 = -2000000003;  // SCREEN 2, 64 col, cell 15x30, default here
 
 // `display` is a global owned by the hal (declared extern in HalDisplay.h,
 // defined in HalDisplay.cpp) -- do not shadow it with a local instance.
@@ -121,8 +127,8 @@ static EpdFontFamily titleFamily(&titleBoldFont);
 static EpdFontFamily smallFamily(&smallRegularFont);
 
 // MicroBASIC's own SCREEN font -- uncompressed, no FontDecompressor needed.
-static EpdFont screenMono1Font(&unscii_15x30);
-static EpdFontFamily screenMono1Family(&screenMono1Font);
+static EpdFont screenMono2Font(&unscii_15x30);
+static EpdFontFamily screenMono2Family(&screenMono2Font);
 
 static char sdLine[96] = "SD: not probed";
 static bool firstPaintDone = false;
@@ -290,8 +296,8 @@ static void drawTerminalContent() {
   char banner[TERM_COLS + 1];
   snprintf(banner, sizeof(banner), "FSP MicroBASIC PaperS3   SCREEN 1  %dx%d", TERM_COLS,
            TERM_ROWS);
-  renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y, banner);
-  renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y + CELL_H, "READY.");
+  renderer.drawText(FONT_SCREEN_MONO_2, TERM_X, TERM_Y, banner);
+  renderer.drawText(FONT_SCREEN_MONO_2, TERM_X, TERM_Y + CELL_H, "READY.");
   char utf8Row[TERM_COLS * 2 + 1];
   for (int r = 0; r < TYPE_ROWS; r++) {
     const int rowY = TERM_Y + (TYPE_ROW0 + r) * CELL_H;
@@ -300,7 +306,7 @@ static void drawTerminalContent() {
     // and it keeps the "what actually changed" area minimal for FAST_REFRESH.
     if (g_oskVisible && rowY >= OSK_Y) continue;
     latin1RowToUtf8(g_typed[r], utf8Row, sizeof(utf8Row));
-    renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, rowY, utf8Row);
+    renderer.drawText(FONT_SCREEN_MONO_2, TERM_X, rowY, utf8Row);
   }
   // Solid-block cursor at the next insertion point (only meaningful while
   // visible, i.e. not currently hidden under the keyboard overlay).
@@ -377,7 +383,7 @@ STEP("fonts");
   renderer.insertFont(FONT_BODY, bodyFamily);
   renderer.insertFont(FONT_TITLE, titleFamily);
   renderer.insertFont(FONT_SMALL, smallFamily);
-  renderer.insertFont(FONT_SCREEN_MONO_1, screenMono1Family);
+  renderer.insertFont(FONT_SCREEN_MONO_2, screenMono2Family);
 
 STEP("input.begin");
   input.begin();

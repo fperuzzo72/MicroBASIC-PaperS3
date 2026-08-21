@@ -71,12 +71,12 @@ static constexpr int TERM_Y = 0;
 
 static_assert(TERM_W == PANEL_W && TERM_H == PANEL_H, "terminal should fill the panel exactly");
 
-// On-screen keyboard overlay: covers the bottom OSK_ROWS terminal rows when
-// shown, full panel width. 8 rows leaves 10 rows of terminal visible above
-// it -- a first-draft split, not yet judged on real hardware.
-static constexpr int OSK_ROWS = 8;
-static constexpr int OSK_H = OSK_ROWS * CELL_H;  // 240
-static constexpr int OSK_Y = PANEL_H - OSK_H;     // 300
+// On-screen keyboard overlay: covers the bottom of the screen when shown,
+// full panel width. 300px gives osk.cpp's 5 rows a 60px row height, matching
+// its 60px unit width (960/16 units) for near-square keys; leaves 240px
+// (8 terminal rows) visible above it.
+static constexpr int OSK_H = 300;
+static constexpr int OSK_Y = PANEL_H - OSK_H;  // 240
 static constexpr int OSK_X = 0;
 static constexpr int OSK_W = PANEL_W;
 
@@ -221,7 +221,8 @@ static void onOskKey(uint8_t hidCode, uint8_t modifiers) {
 
 static void drawTerminalContent() {
   char banner[TERM_COLS + 1];
-  snprintf(banner, sizeof(banner), "MicroBASIC PaperS3   SCREEN 1  %dx%d", TERM_COLS, TERM_ROWS);
+  snprintf(banner, sizeof(banner), "FSP MicroBASIC PaperS3   SCREEN 1  %dx%d", TERM_COLS,
+           TERM_ROWS);
   renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y, banner);
   renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y + CELL_H, "READY.");
   for (int r = 0; r < TYPE_ROWS; r++) {

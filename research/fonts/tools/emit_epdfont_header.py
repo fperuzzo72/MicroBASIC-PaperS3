@@ -172,15 +172,35 @@ def main():
     jobs = [
         ("unscii_11x22", UnsciiScreenFont(u16, 8, 16, 11, 22), 11, 22,
          "Portrait-era SCREEN 1 (48-col): area-coverage resize (1.375x) + stem-width cap + "
-         "cedilla fix. Superseded as the active terminal font by unscii_15x30 (landscape), kept "
-         "generated in case portrait comes back for some other mode."),
+         "cedilla fix. Superseded by the landscape sizes below, kept generated in case portrait "
+         "comes back for some other mode."),
         ("unscii_22x44", UnsciiScreenFont(u16, 8, 16, 22, 44), 22, 44,
          "Portrait-era SCREEN 0 (24-col): area-coverage resize (2.75x) + stem-width cap + "
          "cedilla fix. See unscii_11x22's note above."),
+
+        # Landscape (960x540), same 4-tier column scheme and the same
+        # FONT_SCREEN_MONO_0..3 numbering the X4's config.h used. All four
+        # column counts divide 960 exactly (960 = 2^6*3*5); only 48-col and
+        # 80-col leave a row remainder (960x540's short axis, 540 = 2^2*3^3*5,
+        # isn't a clean multiple of every 2x cell height), split as an equal
+        # top/bottom margin the same way the X4's own README documents for
+        # its own non-exact SCREEN modes: "no border drawn, just empty panel."
+        ("unscii_30x60", UnsciiScreenFont(u16, 8, 16, 30, 60), 30, 60,
+         "SCREEN 0 landscape (32-col): area-coverage resize (3.75x) + stem-width cap + cedilla "
+         "fix. 960/30=32 cols, 540/60=9 rows -- both exact."),
+        ("unscii_20x40", UnsciiScreenFont(u16, 8, 16, 20, 40), 20, 40,
+         "SCREEN 1 landscape (48-col, matches the X4's own default column count): "
+         "area-coverage resize (2.5x) + stem-width cap + cedilla fix. 960/20=48 cols exact; "
+         "540/40=13.5 -> 13 rows (520px), 10px margin top and bottom."),
         ("unscii_15x30", UnsciiScreenFont(u16, 8, 16, 15, 30), 15, 30,
-         "SCREEN 1 landscape (64-col, default): area-coverage resize (1.875x) + stem-width cap + "
-         "cedilla fix. 960/15=64 cols, 540/30=18 rows -- both exact, the full 960x540 landscape "
-         "panel with zero margin on either axis."),
+         "SCREEN 2 landscape (64-col): area-coverage resize (1.875x) + stem-width cap + cedilla "
+         "fix. 960/15=64 cols, 540/30=18 rows -- both exact, the full 960x540 panel with zero "
+         "margin on either axis. This is main.cpp's current bring-up default -- confirmed "
+         "legible on hardware before the other three landscape sizes were even generated."),
+        ("unscii_12x24", UnsciiScreenFont(u16, 8, 16, 12, 24), 12, 24,
+         "SCREEN 3 landscape (80-col): area-coverage resize (1.5x) + stem-width cap + cedilla "
+         "fix. 960/12=80 cols exact; 540/24=22.5 -> 22 rows (528px), 6px margin top and bottom. "
+         "Still comfortably above this project's own 10x20 'smallest still readable' floor."),
     ]
 
     for name, font, cell_w, cell_h, note in jobs:

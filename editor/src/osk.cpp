@@ -10,8 +10,9 @@ namespace {
 enum class KeyKind : uint8_t { Normal, Shift, Ctrl, CapsLock };
 
 struct KeyDef {
-  uint8_t hid;     // USB HID usage ID; 0 for modifier-only keys (kind != Normal)
-  uint8_t units;   // width in grid units (see kUnitPx below)
+  uint8_t hid;      // USB HID usage ID; 0 for modifier-only keys (kind != Normal)
+  uint8_t units;    // width in grid units (see kUnitsPerRow below)
+  uint8_t rowSpan;  // height in rows; 2 for Enter (see kRow2's comment)
   KeyKind kind;
   const char* label;  // fixed label; nullptr means "derive from hid via oskHidToChar()"
 };
@@ -23,8 +24,11 @@ constexpr uint8_t HID_ENTER = 0x28;
 constexpr uint8_t HID_BACKSPACE = OSK_HID_BACKSPACE;
 constexpr uint8_t HID_TAB = 0x2B;
 constexpr uint8_t HID_SPACE = 0x2C;
+constexpr uint8_t HID_MINUS = 0x2D;
+constexpr uint8_t HID_EQUALS = 0x2E;
 constexpr uint8_t HID_LBRACKET = 0x2F;
 constexpr uint8_t HID_RBRACKET = 0x30;
+constexpr uint8_t HID_BACKSLASH = 0x31;
 constexpr uint8_t HID_SEMICOLON = 0x33;
 constexpr uint8_t HID_APOSTROPHE = 0x34;
 constexpr uint8_t HID_GRAVE = 0x35;
@@ -33,68 +37,77 @@ constexpr uint8_t HID_PERIOD = 0x37;
 constexpr uint8_t HID_SLASH = 0x38;
 constexpr uint8_t HID_RIGHT = OSK_HID_RIGHT;
 constexpr uint8_t HID_LEFT = OSK_HID_LEFT;
+constexpr uint8_t HID_UP = 0x52;
+constexpr uint8_t HID_DOWN = 0x51;
 
-// 12 units/row x 45px = 540px exactly (this device's logical width).
-// Row heights split the caller's height budget into 5 equal bands.
-constexpr int kUnitsPerRow = 12;
+// 16 units/row. With the 960-wide landscape overlay this is 60px/unit --
+// close to a real keycap's ~60px (6.5mm at this panel's 234ppi) pitch, and
+// a proper ANSI-ish shape now fits: both Shifts, brackets, backslash,
+// minus/equals, and Enter in its conventional end-of-home-row position.
+constexpr int kUnitsPerRow = 16;
 
-// Row 0: digits + Backspace.
+// Row 0: digits, - =, Backspace.
 const KeyDef kRow0[] = {
-    {0x1E, 1, KeyKind::Normal, nullptr}, {0x1F, 1, KeyKind::Normal, nullptr},
-    {0x20, 1, KeyKind::Normal, nullptr}, {0x21, 1, KeyKind::Normal, nullptr},
-    {0x22, 1, KeyKind::Normal, nullptr}, {0x23, 1, KeyKind::Normal, nullptr},
-    {0x24, 1, KeyKind::Normal, nullptr}, {0x25, 1, KeyKind::Normal, nullptr},
-    {0x26, 1, KeyKind::Normal, nullptr}, {0x27, 1, KeyKind::Normal, nullptr},
-    {HID_BACKSPACE, 2, KeyKind::Normal, "Bksp"},
+    {0x1E, 1, 1, KeyKind::Normal, nullptr}, {0x1F, 1, 1, KeyKind::Normal, nullptr},
+    {0x20, 1, 1, KeyKind::Normal, nullptr}, {0x21, 1, 1, KeyKind::Normal, nullptr},
+    {0x22, 1, 1, KeyKind::Normal, nullptr}, {0x23, 1, 1, KeyKind::Normal, nullptr},
+    {0x24, 1, 1, KeyKind::Normal, nullptr}, {0x25, 1, 1, KeyKind::Normal, nullptr},
+    {0x26, 1, 1, KeyKind::Normal, nullptr}, {0x27, 1, 1, KeyKind::Normal, nullptr},
+    {HID_MINUS, 1, 1, KeyKind::Normal, nullptr}, {HID_EQUALS, 1, 1, KeyKind::Normal, nullptr},
+    {HID_BACKSPACE, 4, 1, KeyKind::Normal, "Bksp"},
 };
 
-// Row 1: Tab, Q-P, [ ].
+// Row 1: Tab, Q-P, [ ] \.
 const KeyDef kRow1[] = {
-    {HID_TAB, 1, KeyKind::Normal, "Tab"},
-    {0x14, 1, KeyKind::Normal, nullptr}, {0x1A, 1, KeyKind::Normal, nullptr},
-    {0x08, 1, KeyKind::Normal, nullptr}, {0x15, 1, KeyKind::Normal, nullptr},
-    {0x17, 1, KeyKind::Normal, nullptr}, {0x1C, 1, KeyKind::Normal, nullptr},
-    {0x18, 1, KeyKind::Normal, nullptr}, {0x0C, 1, KeyKind::Normal, nullptr},
-    {0x12, 1, KeyKind::Normal, nullptr}, {0x13, 1, KeyKind::Normal, nullptr},
-    {HID_LBRACKET, 1, KeyKind::Normal, nullptr}, {HID_RBRACKET, 1, KeyKind::Normal, nullptr},
+    {HID_TAB, 2, 1, KeyKind::Normal, "Tab"},
+    {0x14, 1, 1, KeyKind::Normal, nullptr}, {0x1A, 1, 1, KeyKind::Normal, nullptr},
+    {0x08, 1, 1, KeyKind::Normal, nullptr}, {0x15, 1, 1, KeyKind::Normal, nullptr},
+    {0x17, 1, 1, KeyKind::Normal, nullptr}, {0x1C, 1, 1, KeyKind::Normal, nullptr},
+    {0x18, 1, 1, KeyKind::Normal, nullptr}, {0x0C, 1, 1, KeyKind::Normal, nullptr},
+    {0x12, 1, 1, KeyKind::Normal, nullptr}, {0x13, 1, 1, KeyKind::Normal, nullptr},
+    {HID_LBRACKET, 1, 1, KeyKind::Normal, nullptr}, {HID_RBRACKET, 1, 1, KeyKind::Normal, nullptr},
+    {HID_BACKSLASH, 2, 1, KeyKind::Normal, nullptr},
 };
-static_assert(sizeof(kRow1) / sizeof(kRow1[0]) == 13, "row1 key count");
 
-// Row 2: Caps Lock, A-L, ; '.
+// Row 2: Caps Lock, A-L, ; ', then Enter -- ANSI/ISO position, end of the
+// home row -- spanning down into row 3 (rowSpan=2), like the tall Enter key
+// on older/ISO keyboards. Row 3 below deliberately does NOT declare
+// anything for those same rightmost 3 units; this key's rect alone covers
+// both rows, and oskDraw()/oskHandleTap() size and hit-test it accordingly.
 const KeyDef kRow2[] = {
-    {0, 1, KeyKind::CapsLock, "Caps"},
-    {0x04, 1, KeyKind::Normal, nullptr}, {0x16, 1, KeyKind::Normal, nullptr},
-    {0x07, 1, KeyKind::Normal, nullptr}, {0x09, 1, KeyKind::Normal, nullptr},
-    {0x0A, 1, KeyKind::Normal, nullptr}, {0x0B, 1, KeyKind::Normal, nullptr},
-    {0x0D, 1, KeyKind::Normal, nullptr}, {0x0E, 1, KeyKind::Normal, nullptr},
-    {0x0F, 1, KeyKind::Normal, nullptr},
-    {HID_SEMICOLON, 1, KeyKind::Normal, nullptr}, {HID_APOSTROPHE, 1, KeyKind::Normal, nullptr},
+    {0, 2, 1, KeyKind::CapsLock, "Caps"},
+    {0x04, 1, 1, KeyKind::Normal, nullptr}, {0x16, 1, 1, KeyKind::Normal, nullptr},
+    {0x07, 1, 1, KeyKind::Normal, nullptr}, {0x09, 1, 1, KeyKind::Normal, nullptr},
+    {0x0A, 1, 1, KeyKind::Normal, nullptr}, {0x0B, 1, 1, KeyKind::Normal, nullptr},
+    {0x0D, 1, 1, KeyKind::Normal, nullptr}, {0x0E, 1, 1, KeyKind::Normal, nullptr},
+    {0x0F, 1, 1, KeyKind::Normal, nullptr},
+    {HID_SEMICOLON, 1, 1, KeyKind::Normal, nullptr}, {HID_APOSTROPHE, 1, 1, KeyKind::Normal, nullptr},
+    {HID_ENTER, 3, 2, KeyKind::Normal, "Enter"},
 };
 
-// Row 3: Shift, Z-M, , . /.
+// Row 3: Shift, Z-M, , . /, Shift. Only 13 units of its own -- the
+// remaining 3 (matching row 2's Enter column span exactly) are left
+// undeclared on purpose; see kRow2's comment.
 const KeyDef kRow3[] = {
-    {0, 2, KeyKind::Shift, "Shift"},
-    {0x1D, 1, KeyKind::Normal, nullptr}, {0x1B, 1, KeyKind::Normal, nullptr},
-    {0x06, 1, KeyKind::Normal, nullptr}, {0x19, 1, KeyKind::Normal, nullptr},
-    {0x05, 1, KeyKind::Normal, nullptr}, {0x11, 1, KeyKind::Normal, nullptr},
-    {0x10, 1, KeyKind::Normal, nullptr},
-    {HID_COMMA, 1, KeyKind::Normal, nullptr}, {HID_PERIOD, 1, KeyKind::Normal, nullptr},
-    {HID_SLASH, 1, KeyKind::Normal, nullptr},
+    {0, 2, 1, KeyKind::Shift, "Shift"},
+    {0x1D, 1, 1, KeyKind::Normal, nullptr}, {0x1B, 1, 1, KeyKind::Normal, nullptr},
+    {0x06, 1, 1, KeyKind::Normal, nullptr}, {0x19, 1, 1, KeyKind::Normal, nullptr},
+    {0x05, 1, 1, KeyKind::Normal, nullptr}, {0x11, 1, 1, KeyKind::Normal, nullptr},
+    {0x10, 1, 1, KeyKind::Normal, nullptr},
+    {HID_COMMA, 1, 1, KeyKind::Normal, nullptr}, {HID_PERIOD, 1, 1, KeyKind::Normal, nullptr},
+    {HID_SLASH, 1, 1, KeyKind::Normal, nullptr},
+    {0, 1, 1, KeyKind::Shift, "Shift"},
 };
 
-// Row 4: Ctrl, `, Space, Enter, Left, Right.
-// Up/Down are not on this first-draft layout -- there wasn't room left in a
-// 12-unit row after Ctrl/`/Space/Enter/Left/Right, and it isn't yet clear
-// how much the ported editor will actually need vertical arrow keys versus
-// e.g. PgUp/PgDn-style whole-screen moves. Flagged for the next hardware
-// session rather than guessed at now.
+// Row 4: Ctrl, `, Space, and the full arrow cluster (Up/Down now fit).
 const KeyDef kRow4[] = {
-    {0, 1, KeyKind::Ctrl, "Ctrl"},
-    {HID_GRAVE, 1, KeyKind::Normal, nullptr},
-    {HID_SPACE, 6, KeyKind::Normal, ""},
-    {HID_ENTER, 2, KeyKind::Normal, "Enter"},
-    {HID_LEFT, 1, KeyKind::Normal, "<"},
-    {HID_RIGHT, 1, KeyKind::Normal, ">"},
+    {0, 2, 1, KeyKind::Ctrl, "Ctrl"},
+    {HID_GRAVE, 1, 1, KeyKind::Normal, nullptr},
+    {HID_SPACE, 9, 1, KeyKind::Normal, ""},
+    {HID_LEFT, 1, 1, KeyKind::Normal, "<"},
+    {HID_RIGHT, 1, 1, KeyKind::Normal, ">"},
+    {HID_UP, 1, 1, KeyKind::Normal, "^"},
+    {HID_DOWN, 1, 1, KeyKind::Normal, "v"},
 };
 
 struct Row {
@@ -164,8 +177,11 @@ char oskHidToChar(uint8_t hid, uint8_t modifiers) {
     case HID_ENTER: return '\n';
     case HID_TAB: return '\t';
     case HID_SPACE: return ' ';
+    case HID_MINUS: return shift ? '_' : '-';
+    case HID_EQUALS: return shift ? '+' : '=';
     case HID_LBRACKET: return shift ? '{' : '[';
     case HID_RBRACKET: return shift ? '}' : ']';
+    case HID_BACKSLASH: return shift ? '|' : '\\';
     case HID_SEMICOLON: return shift ? ':' : ';';
     case HID_APOSTROPHE: return shift ? '"' : '\'';
     case HID_GRAVE: return shift ? '~' : '`';
@@ -203,6 +219,24 @@ void keyLabel(const KeyDef& k, char* out, size_t outSize) {
   }
 }
 
+// A key's actual drawn/hit-tested rectangle, accounting for rowSpan.
+struct KeyRect {
+  int x, y, w, h;
+};
+
+KeyRect keyRect(const KeyDef& k, int rowIndex, int cx) {
+  KeyRect out;
+  out.x = cx;
+  out.y = g_y + rowIndex * g_rowH;
+  out.w = k.units * g_unitPx;
+  out.h = k.rowSpan * g_rowH;
+  return out;
+}
+
+bool rectContains(const KeyRect& r, int x, int y) {
+  return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
 }  // namespace
 
 void oskDraw() {
@@ -211,10 +245,9 @@ void oskDraw() {
   for (int r = 0; r < kRowCount; r++) {
     const Row& row = kRows[r];
     int cx = g_x;
-    const int cy = g_y + r * g_rowH;
     for (int i = 0; i < row.count; i++) {
       const KeyDef& k = row.keys[i];
-      const int kw = k.units * g_unitPx;
+      const KeyRect rect = keyRect(k, r, cx);
 
       const bool armed = (k.kind == KeyKind::Shift && g_shiftArmed) ||
                           (k.kind == KeyKind::Ctrl && g_ctrlArmed) ||
@@ -224,23 +257,25 @@ void oskDraw() {
       // an edge -- makes individual keys legible as separate touch targets.
       const int inset = 2;
       if (armed) {
-        g_renderer->fillRect(cx + inset, cy + inset, kw - 2 * inset, g_rowH - 2 * inset, true);
+        g_renderer->fillRect(rect.x + inset, rect.y + inset, rect.w - 2 * inset,
+                              rect.h - 2 * inset, true);
       } else {
-        g_renderer->drawRect(cx + inset, cy + inset, kw - 2 * inset, g_rowH - 2 * inset, true);
+        g_renderer->drawRect(rect.x + inset, rect.y + inset, rect.w - 2 * inset,
+                              rect.h - 2 * inset, true);
       }
 
       char label[8];
       keyLabel(k, label, sizeof(label));
       if (label[0] != '\0') {
         const int tw = g_renderer->getTextWidth(g_fontId, label);
-        const int tx = cx + (kw - tw) / 2;
-        const int ty = cy + (g_rowH - g_renderer->getLineHeight(g_fontId)) / 2;
+        const int tx = rect.x + (rect.w - tw) / 2;
+        const int ty = rect.y + (rect.h - g_renderer->getLineHeight(g_fontId)) / 2;
         // armed keys are filled black; draw the label in white (state=false)
         // so it stays legible instead of vanishing into the fill.
         g_renderer->drawText(g_fontId, tx, ty, label, !armed);
       }
 
-      cx += kw;
+      cx += rect.w;
     }
   }
 }
@@ -250,39 +285,41 @@ bool oskHandleTap(int logicalX, int logicalY) {
     return false;
   }
 
-  const int r = (logicalY - g_y) / g_rowH;
-  if (r < 0 || r >= kRowCount) return false;
-
-  const Row& row = kRows[r];
-  int cx = g_x;
-  for (int i = 0; i < row.count; i++) {
-    const KeyDef& k = row.keys[i];
-    const int kw = k.units * g_unitPx;
-    if (logicalX >= cx && logicalX < cx + kw) {
-      switch (k.kind) {
-        case KeyKind::Shift:
-          g_shiftArmed = !g_shiftArmed;
-          return true;
-        case KeyKind::Ctrl:
-          g_ctrlArmed = !g_ctrlArmed;
-          return true;
-        case KeyKind::CapsLock:
-          g_capsLockOn = !g_capsLockOn;
-          return true;
-        case KeyKind::Normal: {
-          const uint8_t mods = currentModifiers();
-          if (g_onKey) g_onKey(k.hid, mods);
-          // One-shot: Shift/Ctrl apply to exactly the next normal key, then
-          // clear themselves -- the standard touch-keyboard "temporary
-          // shift" instead of a held key. Caps Lock is a separate, genuinely
-          // sticky toggle and is untouched here.
-          g_shiftArmed = false;
-          g_ctrlArmed = false;
-          return true;
+  // Row-spanning keys (Enter) mean a tap can belong to a key declared in an
+  // EARLIER row than the one its Y coordinate falls in, so every key's
+  // actual rect is checked directly rather than pre-selecting one row by Y.
+  for (int r = 0; r < kRowCount; r++) {
+    const Row& row = kRows[r];
+    int cx = g_x;
+    for (int i = 0; i < row.count; i++) {
+      const KeyDef& k = row.keys[i];
+      const KeyRect rect = keyRect(k, r, cx);
+      if (rectContains(rect, logicalX, logicalY)) {
+        switch (k.kind) {
+          case KeyKind::Shift:
+            g_shiftArmed = !g_shiftArmed;
+            return true;
+          case KeyKind::Ctrl:
+            g_ctrlArmed = !g_ctrlArmed;
+            return true;
+          case KeyKind::CapsLock:
+            g_capsLockOn = !g_capsLockOn;
+            return true;
+          case KeyKind::Normal: {
+            const uint8_t mods = currentModifiers();
+            if (g_onKey) g_onKey(k.hid, mods);
+            // One-shot: Shift/Ctrl apply to exactly the next normal key,
+            // then clear themselves -- the standard touch-keyboard
+            // "temporary shift" instead of a held key. Caps Lock is a
+            // separate, genuinely sticky toggle and is untouched here.
+            g_shiftArmed = false;
+            g_ctrlArmed = false;
+            return true;
+          }
         }
       }
+      cx += rect.w;
     }
-    cx += kw;
   }
   return true;  // tap landed in the keyboard area but between/outside keys
 }

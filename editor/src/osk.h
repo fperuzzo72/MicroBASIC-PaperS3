@@ -44,11 +44,14 @@ using OskKeyCallback = void (*)(uint8_t hidCode, uint8_t modifiers);
 
 // Geometry: draws into the caller-specified rectangle (the "keyboard area"
 // below the terminal in main.cpp's layout) via the caller's own renderer/
-// font -- osk.cpp deliberately doesn't own a GfxRenderer or know about
+// fonts -- osk.cpp deliberately doesn't own a GfxRenderer or know about
 // main.cpp's font IDs, so it stays reusable once the real editor is ported.
-// Must be called once before the keyboard is used.
-void oskInit(GfxRenderer& renderer, int labelFontId, int x, int y, int width, int height,
-             OskKeyCallback onKey);
+// labelFontId draws each key's main character; smallLabelFontId (meant to be
+// a smaller size, e.g. Ubuntu 10 vs NotoSans 12) draws the small corner hint
+// on digit/symbol keys showing what Shift produces -- see oskDraw()'s
+// comment. Must be called once before the keyboard is used.
+void oskInit(GfxRenderer& renderer, int labelFontId, int smallLabelFontId, int x, int y, int width,
+             int height, OskKeyCallback onKey);
 
 // Draws every key (outline + centered label) into the current framebuffer.
 // Does not call displayBuffer() -- the caller controls the refresh, same

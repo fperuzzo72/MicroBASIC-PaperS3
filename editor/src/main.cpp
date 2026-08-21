@@ -39,6 +39,7 @@
 #include <builtinFonts/notosans_12_regular.h>
 #include <builtinFonts/notosans_14_regular.h>
 #include <builtinFonts/notosans_16_bold.h>
+#include <builtinFonts/ubuntu_10_regular.h>
 #include <builtinFonts/unscii_15x30.h>
 
 #include "osk.h"
@@ -90,6 +91,7 @@ static constexpr int TOGGLE_Y = 0;
 static constexpr int FONT_UI = -1559651934;     // notosans 12
 static constexpr int FONT_BODY = -1014561631;   // notosans 14
 static constexpr int FONT_TITLE = -1422711852;  // notosans 16
+static constexpr int FONT_SMALL = -1246724383;  // ubuntu 10 (X4's own UI_10_FONT_ID)
 // Same numeric ID convention the ported config.h used on the X4. Only one
 // SCREEN size exists for landscape so far (see README's "SCREEN modes"
 // table); MONO_0 (the portrait-era zoomed size) is not wired up here.
@@ -111,9 +113,11 @@ static SDCardManager sdCard;
 static EpdFont uiRegularFont(&notosans_12_regular);
 static EpdFont bodyRegularFont(&notosans_14_regular);
 static EpdFont titleBoldFont(&notosans_16_bold);
+static EpdFont smallRegularFont(&ubuntu_10_regular);
 static EpdFontFamily uiFamily(&uiRegularFont);
 static EpdFontFamily bodyFamily(&bodyRegularFont);
 static EpdFontFamily titleFamily(&titleBoldFont);
+static EpdFontFamily smallFamily(&smallRegularFont);
 
 // MicroBASIC's own SCREEN font -- uncompressed, no FontDecompressor needed.
 static EpdFont screenMono1Font(&unscii_15x30);
@@ -307,6 +311,7 @@ STEP("fonts");
   renderer.insertFont(FONT_UI, uiFamily);
   renderer.insertFont(FONT_BODY, bodyFamily);
   renderer.insertFont(FONT_TITLE, titleFamily);
+  renderer.insertFont(FONT_SMALL, smallFamily);
   renderer.insertFont(FONT_SCREEN_MONO_1, screenMono1Family);
 
 STEP("input.begin");
@@ -320,7 +325,7 @@ STEP("probeSdCard");
 
 STEP("osk.init");
   typedGridReset();
-  oskInit(renderer, FONT_UI, OSK_X, OSK_Y, OSK_W, OSK_H, onOskKey);
+  oskInit(renderer, FONT_UI, FONT_SMALL, OSK_X, OSK_Y, OSK_W, OSK_H, onOskKey);
 
 STEP("drawScreen");
   drawScreen();

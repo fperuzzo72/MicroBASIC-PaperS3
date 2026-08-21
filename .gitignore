@@ -1,0 +1,6 @@
+.pio/
+.cache/
+.DS_Store
+platformio.local.ini
+*.bin
+port-staging/_fonts_x4_unconverted/

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Emits EpdFontData C headers for all four SCREEN 0/1/2/3 Unscii sizes,
-bypassing fontconvert.py entirely (it only accepts FreeType-loadable font
-files -- TTF/OTF/BDF -- not raw pixel arrays like the ones this project's
-own Unscii resizer produces).
+"""Emits EpdFontData C headers for the PaperS3's two SCREEN sizes (see
+MicroBASIC-PaperS3's README, "SCREEN modes"), bypassing fontconvert.py
+entirely (it only accepts FreeType-loadable font files -- TTF/OTF/BDF --
+not raw pixel arrays like the ones this project's own Unscii resizer
+produces).
 
-Reuses generate_screen_fonts.py's actual glyph pipeline -- ScaledHexFont
-(clean integer 2x/3x block duplication) for the 48-col/32-col sizes,
-UnsciiScreenFont (area-coverage resize + stem-width cap + the ç/Ç fix) for
-the 80-col/64-col sizes -- so the firmware fonts are pixel-identical to
-the already-validated preview BMPs in research/fonts/previews/, not a
-second, potentially-diverging implementation.
+Reuses generate_screen_fonts.py's actual glyph pipeline -- UnsciiScreenFont
+(area-coverage resize + stem-width cap + the ç/Ç fix) for both sizes, since
+both are non-integer scales of unscii-16 (1.375x and 2.75x) -- so the
+firmware fonts are pixel-identical to the same pipeline validated on the
+X4's own 64-col/80-col sizes, not a second, potentially-diverging
+implementation.
 
 Format matches editor/lib/EpdFont/builtinFonts/*.h exactly (verified
 against EpdFontData.h and the pixel-placement math in GfxRenderer.cpp's
@@ -22,40 +23,68 @@ the font's ascender to y *before* renderChar ever sees it:
 
 Every glyph here is the *entire* fixed-size cell (true monospace, not
 proportionally trimmed like the project's prose fonts), so every glyph
-gets identical left=0, top=0, width=cell_w, height=cell_h, advanceX=cell_w.
-For `y` in drawText(fontId, x, y, ...) to land on the pixel row of the
-*top* of the cell (no baseline-offset math needed by callers), the two
-additions above have to cancel: ascender must be 0, matching top=0 -- NOT
-cell_h, which is what an earlier version of this script emitted, and
-which pushed every drawn character down by exactly one full cell height
-(the cursor, drawn with fillRect() directly, doesn't go through
-drawText() at all, so it stayed put -- that mismatch was the tell). 1-bit
-packing (not the 2-bit grayscale mode the prose fonts use), MSB-first,
-ceil(width/8) bytes per row.
+gets identical left=0, top=0, width=cell_w, height=cell_h. For `y` in
+drawText(fontId, x, y, ...) to land on the pixel row of the *top* of the
+cell (no baseline-offset math needed by callers), ascender must be 0,
+matching top=0 -- NOT cell_h, which an earlier (X4-era) version of this
+script emitted, and which pushed every drawn character down by exactly
+one full cell height (the cursor, drawn with fillRect() directly, doesn't
+go through drawText() at all, so it stayed put -- that mismatch was the
+tell). 1-bit packing (not the 2-bit grayscale mode the prose fonts use),
+MSB-first, packed as one continuous bitstream across the whole glyph (NOT
+per-row byte-aligned -- see pack_bits_contiguous()'s docstring for why that
+distinction matters and what it broke before this was fixed).
+
+advanceX is 12.4 fixed-point (4 fractional bits), NOT whole pixels -- see
+EpdFontData.h's fp4 namespace and GfxRenderer.cpp's fp4::toPixel() call
+sites. This is the one field that changed shape between the X4-era
+EpdFontData this pipeline was written against and the version this repo's
+EpdFont/GfxRenderer was carried from (crosspoint-reader-m5papers3): the
+X4-era headers emitted advanceX as whole pixels, which reads as 1/16 of
+the intended cell width under the new renderer -- compiles clean, renders
+wrong, and there is no error to catch it. Every emitted advanceX here is
+`cell_w << 4` for exactly that reason; do not "simplify" it back to
+cell_w.
 
 Usage:
     python3 emit_epdfont_header.py
-writes all four headers directly into
+writes both headers directly into
 ../../../editor/lib/EpdFont/builtinFonts/.
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
-from generate_screen_fonts import ScaledHexFont, UnsciiScreenFont  # noqa: E402
+from generate_screen_fonts import UnsciiScreenFont  # noqa: E402
 
 SRC = os.path.join(os.path.dirname(__file__), "..", "src")
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..",
                         "editor", "lib", "EpdFont", "builtinFonts")
 
 
-def pack_1bit_row(bits, width):
-    """bits: list of 0/1, length == width."""
-    nbytes = (width + 7) // 8
+def pack_bits_contiguous(flat_bits):
+    """flat_bits: row-major 0/1 values for the WHOLE glyph (width*height long),
+    packed as one continuous MSB-first bitstream -- NOT per-row byte-aligned.
+
+    This has to match GfxRenderer.cpp's renderCharImpl exactly: it tracks a
+    single running `pixelPosition` across the entire glyph (`pixelPosition =
+    glyphY * width + glyphX`, incremented once per pixel with no reset at row
+    boundaries) and indexes the bitmap as `bitmap[pixelPosition >> 3]` -- i.e.
+    zero padding between rows, padding only at the very end of the last byte.
+
+    An earlier version of this function packed each row into its own
+    ceil(width/8) bytes (padding every row out to a byte boundary). For any
+    width that is a multiple of 8 that's identical to this scheme, which is
+    exactly why 16x32/24x48 (the X4's SCREEN 0/1) always looked fine while
+    12x24/10x20 (SCREEN 2/3) were quietly garbled from the second row of
+    every glyph onward -- confirmed illegible on real X4 hardware, and
+    reproduced here on the PaperS3's 11x22/22x44 fonts before this fix.
+    """
+    nbytes = (len(flat_bits) + 7) // 8
     value = 0
-    for b in bits:
+    for b in flat_bits:
         value = (value << 1) | (1 if b else 0)
-    value <<= nbytes * 8 - width
+    value <<= nbytes * 8 - len(flat_bits)
     return [(value >> (8 * (nbytes - 1 - i))) & 0xFF for i in range(nbytes)]
 
 
@@ -87,10 +116,10 @@ def emit_header(font, cell_w, cell_h, name, source_note):
     for cp in codepoints:
         bits = font.get_cell_bits(chr(cp))
         glyph_offset = len(bitmap_bytes)
-        for row in bits:
-            bitmap_bytes.extend(pack_1bit_row(row, cell_w))
+        flat_bits = [b for row in bits for b in row]
+        bitmap_bytes.extend(pack_bits_contiguous(flat_bits))
         data_length = len(bitmap_bytes) - glyph_offset
-        glyph_entries.append((cell_w, cell_h, cell_w, 0, 0, data_length, glyph_offset))
+        glyph_entries.append((cell_w, cell_h, cell_w << 4, 0, 0, data_length, glyph_offset))
 
     out = []
     out.append("// Generated by research/fonts/tools/emit_epdfont_header.py -- do not hand-edit.")
@@ -141,14 +170,10 @@ def main():
     u16 = os.path.join(SRC, "unscii-16.hex")
 
     jobs = [
-        ("unscii_24x48", ScaledHexFont(u16, 8, 16, 3), 24, 48,
-         "SCREEN 0 (32-col): clean 3x nearest-neighbor scale of unscii-16.hex."),
-        ("unscii_16x32", ScaledHexFont(u16, 8, 16, 2), 16, 32,
-         "SCREEN 1 (48-col, default): clean 2x nearest-neighbor scale of unscii-16.hex."),
-        ("unscii_12x24", UnsciiScreenFont(u16, 8, 16, 12, 24), 12, 24,
-         "SCREEN 2 (64-col): area-coverage resize + stem-width cap + cedilla fix."),
-        ("unscii_10x20", UnsciiScreenFont(u16, 8, 16, 10, 20), 10, 20,
-         "SCREEN 3 (80-col): area-coverage resize + stem-width cap + cedilla fix."),
+        ("unscii_11x22", UnsciiScreenFont(u16, 8, 16, 11, 22), 11, 22,
+         "SCREEN 1 (48-col, default): area-coverage resize (1.375x) + stem-width cap + cedilla fix."),
+        ("unscii_22x44", UnsciiScreenFont(u16, 8, 16, 22, 44), 22, 44,
+         "SCREEN 0 (24-col): area-coverage resize (2.75x) + stem-width cap + cedilla fix."),
     ]
 
     for name, font, cell_w, cell_h, note in jobs:

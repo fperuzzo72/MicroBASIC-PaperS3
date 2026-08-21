@@ -1,11 +1,17 @@
-// MicroBASIC-PaperS3 -- milestone 1: hardware bring-up.
+// MicroBASIC-PaperS3 -- milestone 1/2: hardware bring-up + SCREEN font
+// legibility test.
 //
-// Proves the three subsystems the whole port stands on, on the real panel,
-// before a single MicroBASIC feature is carried over: the 960x540 EPD driven
-// in PORTRAIT (540x960 logical), the GT911 touch panel, and the SPI SD card.
+// Milestone 1 (display, GT911 touch, SD card, 4-corner tap mapping) is done
+// and confirmed on real hardware -- see the project README and git log.
+// FONT_SCREEN_MONO_0/1 are the two real SCREEN fonts this device will use
+// (research/fonts/tools/emit_epdfont_header.py), and drawTerminalContent()
+// fills the entire 48x24 terminal area with real glyphs -- not reference
+// lines -- as the actual legibility test: if the 11x22 cell is too small to
+// read on the physical panel, that has to be discovered HERE, since it's the
+// one decision the rest of the port depends on.
 //
-// It doubles as the geometry proof. The decided layout is a 48x24 character
-// terminal over a fixed on-screen keyboard:
+// Layout: a 48x24 character terminal over a fixed on-screen keyboard area
+// (unbuilt -- outline only, milestone 3):
 //
 //     540 x 960 portrait
 //     +-----------------+
@@ -15,16 +21,14 @@
 //     |    keyboard     |   540 x 432
 //     +-----------------+
 //
-// so this draws the real cell grid at the real size. If 11x22 cells are too
-// small to read on the physical panel, that has to be discovered HERE -- it
-// is the one decision every font regeneration downstream depends on.
+// All diagnostic/status text (panel size, touch/SD status, tap feedback)
+// lives in the keyboard area on NotoSans/Ubuntu (FONT_UI/FONT_TITLE) instead
+// of overlapping the terminal, so the terminal is an honest, uncluttered
+// test of the mono fonts alone.
 //
-// Touch reports land in the terminal area as text and as a crosshair, which
-// is also the corner-tap check freeink-sdk/docs/m5papers3-support.md asks for
-// under "Still to verify": the GT911 flipX/flipY values in
-// BoardConfig::M5PAPERS3_GT911 are inherited from M5Paper v1.1 by analogy and
-// have never been confirmed on this chip revision. Tap the four corner marks;
-// if the crosshair lands mirrored, those flags are wrong.
+// Touch: tap the four corner marks -- feedback (a crosshair, plus the last
+// tap's coordinates) draws in the keyboard area. Already confirmed correct
+// on hardware; this is a standing regression check, not an open question.
 
 #include <Arduino.h>
 #include <FontCacheManager.h>
@@ -39,6 +43,8 @@
 #include <builtinFonts/notosans_12_regular.h>
 #include <builtinFonts/notosans_14_regular.h>
 #include <builtinFonts/notosans_16_bold.h>
+#include <builtinFonts/unscii_11x22.h>
+#include <builtinFonts/unscii_22x44.h>
 
 // Logging.h (pulled in transitively by the hal headers) redefines Serial as a
 // proxy whose methods this build does not link. The bring-up wants the plain
@@ -74,6 +80,11 @@ static_assert(KBD_H == 432, "keyboard geometry drifted");
 static constexpr int FONT_UI = -1559651934;     // notosans 12
 static constexpr int FONT_BODY = -1014561631;   // notosans 14
 static constexpr int FONT_TITLE = -1422711852;  // notosans 16
+// Same numeric IDs the ported config.h used on the X4, kept for continuity
+// when that file eventually comes across; only two SCREEN sizes exist here
+// (see README's "SCREEN modes" table) so MONO_2/MONO_3 are not defined.
+static constexpr int FONT_SCREEN_MONO_0 = -2000000001;  // SCREEN 0, 24 col, cell 22x44
+static constexpr int FONT_SCREEN_MONO_1 = -2000000002;  // SCREEN 1, 48 col, cell 11x22 (default)
 
 // `display` is a global owned by the hal (declared extern in HalDisplay.h,
 // defined in HalDisplay.cpp) -- do not shadow it with a local instance.
@@ -94,6 +105,12 @@ static EpdFont titleBoldFont(&notosans_16_bold);
 static EpdFontFamily uiFamily(&uiRegularFont);
 static EpdFontFamily bodyFamily(&bodyRegularFont);
 static EpdFontFamily titleFamily(&titleBoldFont);
+
+// MicroBASIC's own SCREEN fonts -- uncompressed, no FontDecompressor needed.
+static EpdFont screenMono0Font(&unscii_22x44);
+static EpdFont screenMono1Font(&unscii_11x22);
+static EpdFontFamily screenMono0Family(&screenMono0Font);
+static EpdFontFamily screenMono1Family(&screenMono1Font);
 
 static char sdLine[96] = "SD: not probed";
 static bool firstPaintDone = false;
@@ -118,14 +135,29 @@ static void probeSdCard() {
   snprintf(sdLine, sizeof(sdLine), "SD: mounted, %d entries in /", files);
 }
 
-// The cell grid, drawn at true size. Every 8th column and every 4th row gets a
-// full rule so columns/rows can be counted straight off the panel.
-static void drawCellGrid() {
-  for (int c = 0; c <= TERM_COLS; c += 8) {
-    renderer.drawLine(TERM_X + c * CELL_W, TERM_Y, TERM_X + c * CELL_W, TERM_Y + TERM_H, true);
-  }
-  for (int r = 0; r <= TERM_ROWS; r += 4) {
-    renderer.drawLine(TERM_X, TERM_Y + r * CELL_H, TERM_X + TERM_W, TERM_Y + r * CELL_H, true);
+// The real legibility test: every row of the 48x24 grid filled with actual
+// SCREEN 1 (11x22) glyphs, not reference lines. Content is chosen to stress
+// exactly what generate_screen_fonts.py's own docstring flags as fragile at
+// a non-integer scale (1.375x here) -- stem width on I/l/T/#/*/}, and the
+// Latin-1 accented set (BASIC text will be Portuguese). Cycles to fill all
+// 24 rows; repetition is fine, this is a visual check, not a content demo.
+static const char* const kTermLines[] = {
+    "MicroBASIC PaperS3   SCREEN 1  48x24",
+    "cell 11x22   the quick brown fox jumps",
+    "over the lazy dog.  THE QUICK BROWN FOX",
+    "JUMPS OVER THE LAZY DOG.",
+    "0123456789   !@#$%^&*()_+-=[]{}",
+    ":;\"'<>,.?/\\|~`",
+    "stems: l I 1 | ! T # * } { [ ] ( )",
+    "ç Ç ã Ã é É á Á â Â ê Ê í Í ó Ó ô Ô",
+    "ú Ú ü Ü õ Õ ° ª º « » ¿ ¡",
+};
+static constexpr int kTermLineCount = sizeof(kTermLines) / sizeof(kTermLines[0]);
+
+static void drawTerminalContent() {
+  for (int row = 0; row < TERM_ROWS; row++) {
+    renderer.drawText(FONT_SCREEN_MONO_1, TERM_X, TERM_Y + row * CELL_H,
+                       kTermLines[row % kTermLineCount]);
   }
 }
 
@@ -142,32 +174,34 @@ static void drawCornerTargets() {
 static void drawScreen() {
   renderer.clearScreen();
 
+  // Terminal area: pure SCREEN 1 glyph content, nothing else drawn into it,
+  // so it's an honest legibility test -- no UI chrome overlapping the cells.
+  drawTerminalContent();
+  drawCornerTargets();
+
+  // Everything diagnostic lives in the keyboard area instead, on FONT_UI
+  // (NotoSans/Ubuntu, kept specifically for anything that must stay readable
+  // regardless of how the mono fonts turn out). At 540 logical px wide, the
+  // reader's 14pt body font overflows on any line of real length -- that
+  // produced 819 "Outside range" clips earlier -- so this stays on FONT_UI.
   char buf[96];
-  int y = 8;
+  int y = KBD_Y + 10;
+  renderer.drawRect(0, KBD_Y, PANEL_W, KBD_H, true);
 
   renderer.drawText(FONT_TITLE, TERM_X, y, "MicroBASIC PaperS3");
-  y += 30;
+  y += 26;
 
-  // Everything below stays on FONT_UI: at 540 logical pixels of width, the
-  // reader's 14pt body font overflows the panel on any line of real length
-  // (its glyphs are far wider than the X4-era mono cells this layout was
-  // sketched against), which is what produced 819 "Outside range" clips.
-  snprintf(buf, sizeof(buf), "panel %dx%d portrait", renderer.getScreenWidth(),
-           renderer.getScreenHeight());
+  snprintf(buf, sizeof(buf), "panel %dx%d  term %dx%d cell %dx%d", renderer.getScreenWidth(),
+           renderer.getScreenHeight(), TERM_COLS, TERM_ROWS, CELL_W, CELL_H);
   renderer.drawText(FONT_UI, TERM_X, y, buf);
-  y += 22;
-
-  snprintf(buf, sizeof(buf), "term %dx%d  cell %dx%d = %dx%d", TERM_COLS, TERM_ROWS, CELL_W, CELL_H,
-           TERM_W, TERM_H);
-  renderer.drawText(FONT_UI, TERM_X, y, buf);
-  y += 22;
+  y += 20;
 
   snprintf(buf, sizeof(buf), "touch: %s", input.hasTouch() ? "GT911 ok" : "NOT CONFIGURED");
   renderer.drawText(FONT_UI, TERM_X, y, buf);
-  y += 22;
+  y += 20;
 
   renderer.drawText(FONT_UI, TERM_X, y, sdLine);
-  y += 26;
+  y += 24;
 
   if (tapCount == 0) {
     renderer.drawText(FONT_UI, TERM_X, y, "Tap the 4 corner marks.");
@@ -175,14 +209,6 @@ static void drawScreen() {
     snprintf(buf, sizeof(buf), "tap #%d -> (%d, %d)", tapCount, lastTapX, lastTapY);
     renderer.drawText(FONT_UI, TERM_X, y, buf);
   }
-
-  drawCellGrid();
-  drawCornerTargets();
-
-  // keyboard area outline -- nothing lives here yet, this is milestone 2
-  renderer.drawRect(0, KBD_Y, PANEL_W, KBD_H, true);
-  snprintf(buf, sizeof(buf), "keyboard area %dx%d", PANEL_W, KBD_H);
-  renderer.drawText(FONT_UI, TERM_X + 8, KBD_Y + KBD_H / 2 - 8, buf);
 
   // crosshair at the last tap
   if (lastTapX >= 0) {
@@ -222,25 +248,6 @@ void setup() {
   STEP("display.begin");
   display.begin();
 
-  // Decisive bisection: drive the panel all-black then all-white straight
-  // through HalDisplay, bypassing GfxRenderer entirely. If the panel flashes,
-  // the driver and the EPD rail are fine and any "nothing appears" is a
-  // framebuffer problem above this line. If it does not flash, the problem is
-  // below -- power, pins or panel init -- and no amount of drawing will help.
-  Serial.printf("[panel] BoardConfig %dx%d\n", (int)BoardConfig::ACTIVE.displayWidth,
-                (int)BoardConfig::ACTIVE.displayHeight);
-  Serial.flush();
-  for (int pass = 0; pass < 2; pass++) {
-    const uint8_t color = pass == 0 ? 0x00 : 0xFF;
-    Serial.printf("[panel] fill 0x%02X ...\n", color);
-    Serial.flush();
-    const uint32_t t = millis();
-    display.clearScreen(color);
-    display.displayBuffer(HalDisplay::FULL_REFRESH);
-    Serial.printf("[panel] fill 0x%02X done in %lu ms\n", color, (unsigned long)(millis() - t));
-    Serial.flush();
-    delay(1200);
-  }
 STEP("renderer.begin");
   renderer.begin();
   // Portrait is the decided orientation: the terminal sits above a fixed
@@ -255,6 +262,8 @@ STEP("fonts");
   renderer.insertFont(FONT_UI, uiFamily);
   renderer.insertFont(FONT_BODY, bodyFamily);
   renderer.insertFont(FONT_TITLE, titleFamily);
+  renderer.insertFont(FONT_SCREEN_MONO_0, screenMono0Family);
+  renderer.insertFont(FONT_SCREEN_MONO_1, screenMono1Family);
 
 STEP("input.begin");
   input.begin();

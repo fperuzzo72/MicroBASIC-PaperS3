@@ -29,13 +29,27 @@
 #include <Arduino.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
+#include <HalGPIO.h>
+#include <HalPowerManager.h>
 #include <HalDisplay.h>
 #include <InputManager.h>
 #include <SDCardManager.h>
 #include <builtinFonts/notosans_12_regular.h>
 #include <builtinFonts/notosans_14_regular.h>
 #include <builtinFonts/notosans_16_bold.h>
+
+// Logging.h (pulled in transitively by the hal headers) redefines Serial as a
+// proxy whose methods this build does not link. The bring-up wants the plain
+// Arduino Serial, so put it back.
+// With ARDUINO_USB_CDC_ON_BOOT the Arduino core itself defines Serial as
+// USBSerial, and Logging.h has already replaced that define with its own proxy.
+// Point it back at the real USB CDC object.
+#ifdef Serial
+#undef Serial
+#endif
+#define Serial logSerial  // Logging.h's HWCDC& bound to the real Serial
 
 #include <cstdio>
 #include <cstring>
@@ -194,8 +208,39 @@ void setup() {
   Serial.flush();
 #define STEP(msg) do { Serial.printf("[step] %s\n", msg); Serial.flush(); } while (0)
 
-STEP("display.begin");
+  // Match the init order of the reader that already drives this panel:
+  // power rails held first, then GPIO, then the display.
+  STEP("holdPowerRails");
+  BoardConfig::holdPowerRails();
+  STEP("gpio.begin");
+  gpio.begin();
+  // The reader brings power management up before it ever touches the panel.
+  // Skipping it was the one init step this bring-up had that cpr does not.
+  STEP("powerManager.begin");
+  powerManager.begin();
+
+  STEP("display.begin");
   display.begin();
+
+  // Decisive bisection: drive the panel all-black then all-white straight
+  // through HalDisplay, bypassing GfxRenderer entirely. If the panel flashes,
+  // the driver and the EPD rail are fine and any "nothing appears" is a
+  // framebuffer problem above this line. If it does not flash, the problem is
+  // below -- power, pins or panel init -- and no amount of drawing will help.
+  Serial.printf("[panel] BoardConfig %dx%d\n", (int)BoardConfig::ACTIVE.displayWidth,
+                (int)BoardConfig::ACTIVE.displayHeight);
+  Serial.flush();
+  for (int pass = 0; pass < 2; pass++) {
+    const uint8_t color = pass == 0 ? 0x00 : 0xFF;
+    Serial.printf("[panel] fill 0x%02X ...\n", color);
+    Serial.flush();
+    const uint32_t t = millis();
+    display.clearScreen(color);
+    display.displayBuffer(HalDisplay::FULL_REFRESH);
+    Serial.printf("[panel] fill 0x%02X done in %lu ms\n", color, (unsigned long)(millis() - t));
+    Serial.flush();
+    delay(1200);
+  }
 STEP("renderer.begin");
   renderer.begin();
   // Portrait is the decided orientation: the terminal sits above a fixed

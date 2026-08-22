@@ -257,6 +257,15 @@ class AreaResampledHexFont(HexFont):
 MAX_STEM_WIDTH = 3
 STEM_OVERSHOOT_TOLERANCE = 1
 
+# A run only counts as a vertical stem's cross-section -- and so is eligible
+# for capping -- if it's part of a feature that actually runs tall through
+# the glyph. Measured on unscii-16 at 15x30: real stems (I, l, T, 1, #, the
+# curl of }) chain to a vertical span of 12-22 rows. A deliberately wide
+# horizontal bar with nothing above or below it -- -, _, both bars of = --
+# tops out at 2-3. The gap between those two groups is wide, so this
+# threshold isn't sensitive to the exact value chosen.
+MIN_STEM_VERTICAL_SPAN = 6
+
 
 def _row_runs(row):
     runs, w, x = [], len(row), 0
@@ -271,10 +280,29 @@ def _row_runs(row):
     return runs
 
 
+def _vertical_span(bits, y, start, end):
+    """How many consecutive rows, walking up and down from y, have a run
+    overlapping [start, end) -- i.e. the height of the feature this
+    particular run's cross-section belongs to."""
+    def overlaps(row):
+        return any(s < end and e > start for s, e in _row_runs(row))
+    top = y
+    while top - 1 >= 0 and overlaps(bits[top - 1]):
+        top -= 1
+    bottom = y
+    while bottom + 1 < len(bits) and overlaps(bits[bottom + 1]):
+        bottom += 1
+    return bottom - top + 1
+
+
 def cap_stem_width(bits):
-    """Caps a row's run to MAX_STEM_WIDTH only when that run is a small
-    overshoot of the glyph's own typical (median) run width -- i.e. clearly
-    the stem, not a deliberately-wide serif/bar."""
+    """Caps a row's run to MAX_STEM_WIDTH only when that run is both a small
+    overshoot of the glyph's own typical (median) run width AND part of a
+    tall vertical feature -- i.e. clearly a stem that got fattened by the
+    upscale, not a deliberately-wide horizontal bar like -, _ or =. Without
+    the vertical-span check, a glyph that's essentially just one wide bar
+    (its own long run IS the median) gets misread as an oversized stem and
+    chopped down to MAX_STEM_WIDTH regardless of how wide it's meant to be."""
     lengths = [end - start for row in bits for start, end in _row_runs(row)]
     if not lengths:
         return bits
@@ -283,7 +311,8 @@ def cap_stem_width(bits):
     for y, row in enumerate(bits):
         for start, end in _row_runs(row):
             length = end - start
-            if MAX_STEM_WIDTH < length <= typical + STEM_OVERSHOOT_TOLERANCE:
+            if MAX_STEM_WIDTH < length <= typical + STEM_OVERSHOOT_TOLERANCE \
+                    and _vertical_span(bits, y, start, end) >= MIN_STEM_VERTICAL_SPAN:
                 excess = length - MAX_STEM_WIDTH
                 trim_left = excess // 2
                 for i in range(start, start + trim_left):

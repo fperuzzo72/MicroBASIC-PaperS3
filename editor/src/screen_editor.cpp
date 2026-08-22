@@ -198,7 +198,28 @@ void screenEditorBackspace() {
     // cursor really is up there. On a line the user started fresh, backspace
     // at column 0 must do nothing -- otherwise it walks back into, and eats,
     // whatever unrelated text happens to be on the previous row.
-    rowIsContinuation[cursorRow] = false;
+    //
+    // Whether crossing also severs the tie (clears rowIsContinuation[cursorRow])
+    // depends on this row's own content, not on the fact that a boundary got
+    // crossed. Clearing unconditionally (an earlier version did) orphans
+    // whatever text is still sitting here whenever the cursor was moved away
+    // mid-line rather than backspaced here linearly: navigate onto the
+    // wrapped row, press Backspace once, and Enter on the row above then
+    // reads only that row, silently dropping everything still on this one.
+    // Never clearing (the version after that) fixes that but breaks the
+    // opposite, rarer case: backspace this row down to empty, cross the
+    // boundary, then type something fresh into it -- Enter now glues it to
+    // the row above, because the leftover flag says it's still that row's
+    // continuation. The two cases are told apart by whether this row is
+    // empty *before* this call touches anything (the deletion below only
+    // ever touches the row being backed INTO, never this one): empty means
+    // there was nothing left to continue, so the tie is genuinely gone;
+    // non-empty means it's still one logical line with the row above.
+    bool tailEmpty = true;
+    for (int c = 0; c < cols; c++) {
+      if (grid[cursorRow][c] != (uint32_t)' ') { tailEmpty = false; break; }
+    }
+    if (tailEmpty) rowIsContinuation[cursorRow] = false;
     cursorRow--;
     cursorCol = cols - 1;
   } else {

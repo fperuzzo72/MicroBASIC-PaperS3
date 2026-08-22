@@ -63,8 +63,13 @@ static constexpr int PANEL_H = 540;
 // On-screen keyboard overlay: covers the bottom of the screen when shown,
 // full panel width, independent of whatever SCREEN mode/cell size the
 // terminal is currently using -- its own geometry never changes with that.
-static constexpr int OSK_H = 300;
-static constexpr int OSK_Y = PANEL_H - OSK_H;  // 240
+// 360px gives osk.cpp's 6 rows a 60px row height -- back to what it was
+// before the Esc row was added (5 rows at 60px = 300px); at 50px (300/6)
+// typing got noticeably harder on the physical panel, so this stays
+// comfortable at the cost of a bit more of the terminal being covered
+// while the keyboard is up.
+static constexpr int OSK_H = 360;
+static constexpr int OSK_Y = PANEL_H - OSK_H;  // 180
 static constexpr int OSK_X = 0;
 static constexpr int OSK_W = PANEL_W;
 
@@ -134,13 +139,13 @@ static void probeSdCard() {
   snprintf(sdLine, sizeof(sdLine), "SD: mounted, %d entries in /", files);
 }
 
-// Declared extern by tb_bridge.cpp/tb_runtime.cpp: on the X4 these pump the
-// d-pad into a running program and rearm its edge-detection after the
-// interpreter returns control. This device is touch-only -- there is no
-// physical button to pump -- so both are empty on purpose, not placeholders
-// for something missing.
+// Declared extern by tb_bridge.cpp: on the X4 this rearms the d-pad's
+// edge-detection after the interpreter returns control. This device has no
+// physical button to rearm, so it's empty on purpose. pumpPhysicalButtonsForProgram()
+// (also declared extern, by tb_runtime.cpp) is NOT a no-op here, despite the
+// name -- see its real definition below handleTouchTap()/screenEditorFlushDisplay(),
+// which it needs.
 void physicalButtonsRearm() {}
-void pumpPhysicalButtonsForProgram() {}
 
 // osk.cpp's callback: exactly the (HID keycode, HID modifiers) pair
 // enqueueKeyEvent() expects, plus the `pressed=true` a discrete tap always
@@ -222,6 +227,33 @@ static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
   return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
 }
 
+// Routes one already-logical-coordinate tap to the toggle button or the
+// on-screen keyboard. Returns true if something changed and a redraw is
+// due. Shared between loop() (the normal case) and
+// pumpPhysicalButtonsForProgram() (touch polling during a blocked BASIC
+// run, see that function's own comment) -- both need exactly this
+// dispatch, and diverging would mean a tap behaving differently depending
+// on whether a program happened to be running when it landed.
+static bool handleTouchTap(int lx, int ly) {
+  if (tapInRect(lx, ly, TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H)) {
+    g_oskVisible = !g_oskVisible;
+    return true;
+  }
+  if (g_oskVisible) {
+    // oskHandleTap() bounds-checks against the region passed to oskInit()
+    // and returns false outside it; gated on g_oskVisible too so a tap over
+    // the (currently hidden) overlay's fixed region doesn't get misread as
+    // a key press while real terminal content is shown there. A hit either
+    // arms/toggles a modifier (drawn differently, needs a redraw) or calls
+    // onOskKey() -> enqueueKeyEvent() -- including Escape or Ctrl+C, which
+    // is exactly how a running program gets broken; see
+    // pumpPhysicalButtonsForProgram()'s comment for why that needs this
+    // same routing to actually be reachable mid-run.
+    return oskHandleTap(lx, ly);
+  }
+  return false;
+}
+
 static void drawScreen() {
   renderer.clearScreen();
   drawTerminalContent();
@@ -243,6 +275,32 @@ static void drawScreen() {
 // tb_runtime.cpp calls this directly (throttled by wall-clock time) to keep
 // a running program's output visible as it goes.
 void screenEditorFlushDisplay() { drawScreen(); }
+
+// Declared extern by tb_runtime.cpp, called from byield() at the same
+// cadence as its own scheduler yield -- byield()'s own comment: "The d-pad
+// only reaches a running program through here: loop() is blocked inside
+// the interpreter for the whole run." Same is true here, but there is no
+// d-pad -- there is touch, which loop() normally polls, and loop() is
+// exactly what's blocked. Without this actually polling touch, NOTHING
+// during a run ever calls input.update() or routes a tap anywhere: not
+// Escape/Ctrl+C to checkch()'s break check (pumpProgramInput(), reached via
+// inputConsumeBreakPending()), not a tap on the "Hide" button. Both read as
+// "touch stopped working" and needed a physical reboot before this existed.
+//
+// screenEditorFlushDisplay() is called directly (not just left to
+// byield()'s own throttled call after this returns) when a tap actually
+// changed something: byield() gates its own flush on tb_runtime.cpp's
+// termDirty, which only outch() sets, so a tap that toggles the keyboard
+// without the program having printed anything would otherwise sit invisible
+// until the next unrelated redraw.
+void pumpPhysicalButtonsForProgram() {
+  input.update();
+  float nx, ny;
+  if (!input.wasTouchTap(nx, ny)) return;
+  int lx, ly;
+  renderer.tapToLogical(nx, ny, lx, ly);
+  if (handleTouchTap(lx, ly)) screenEditorFlushDisplay();
+}
 
 void setup() {
   Serial.begin(115200);
@@ -344,20 +402,7 @@ void loop() {
     int lx, ly;
     renderer.tapToLogical(nx, ny, lx, ly);
     Serial.printf("tap norm(%.3f, %.3f) -> logical(%d, %d)\n", nx, ny, lx, ly);
-
-    if (tapInRect(lx, ly, TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H)) {
-      g_oskVisible = !g_oskVisible;
-      screenDirty = true;
-    } else if (g_oskVisible) {
-      // oskHandleTap() bounds-checks against the region passed to oskInit()
-      // and returns false outside it; gated on g_oskVisible too so a tap
-      // over the (currently hidden) overlay's fixed region doesn't get
-      // misread as a key press while real terminal content is shown there.
-      // A hit either arms/toggles a modifier (drawn differently, needs a
-      // redraw) or calls onOskKey() -> enqueueKeyEvent(), which
-      // processAllInput() below turns into an actual screen-editor action.
-      if (oskHandleTap(lx, ly)) screenDirty = true;
-    }
+    if (handleTouchTap(lx, ly)) screenDirty = true;
   }
 
   processAllInput();

@@ -314,8 +314,33 @@ void oskDraw() {
         g_renderer->drawRoundedRect(kx, ky, kw, kh, kBorderWidth, kCornerRadius, true);
       }
 
+      // Whether a Shift-hint will be drawn in this key's top-right corner
+      // (see below) -- decided first because, when there is one, the main
+      // label below needs to make room for it. Only for keys where Shift
+      // actually changes the character (digits/symbols) -- letters just
+      // case-shift, which doesn't need this treatment any more than a real
+      // keyboard dual-labels its letter keys.
+      char hint[2] = {0, 0};
+      if (k.label == nullptr && !(k.hid >= 0x04 && k.hid <= 0x1D)) {
+        const char plain = oskHidToChar(k.hid, currentModifiers() & ~OSK_MOD_SHIFT_LEFT);
+        const char shiftedCh = oskHidToChar(k.hid, currentModifiers() | OSK_MOD_SHIFT_LEFT);
+        if (shiftedCh != 0 && shiftedCh != plain) hint[0] = shiftedCh;
+      }
+      const bool hasHint = hint[0] != '\0';
+
       // Main label: the key's current character (or fixed text for
-      // Tab/Caps/Enter/etc), centered, using the larger label font.
+      // Tab/Caps/Enter/etc), centered, using the larger label font. When a
+      // Shift-hint is also being drawn, nudged down-left of true center --
+      // matching a real keycap's off-center primary legend when a smaller
+      // secondary symbol shares the top-right corner. Measured against
+      // every digit/shift pair (1..0 vs !@#$%^&*()) in the two fonts this
+      // actually uses: unshifted, the widest hint ('@', on the '2' key)
+      // overlaps the centered main glyph's bounding box by 4x12px -- '%' on
+      // '5' by 2x7px -- which is what read as the hint "touching" the main
+      // character. A 4px-left/4px-down nudge clears every pair with margin
+      // to spare; smaller nudges still leave '2'/'@' overlapping.
+      constexpr int kHintClearDx = -4;
+      constexpr int kHintClearDy = 4;
       char label[8];
       if (k.label != nullptr) {
         std::snprintf(label, sizeof(label), "%s", k.label);
@@ -330,8 +355,12 @@ void oskDraw() {
       }
       if (label[0] != '\0') {
         const int tw = g_renderer->getTextWidth(g_fontId, label);
-        const int tx = rect.x + (rect.w - tw) / 2;
-        const int ty = rect.y + (rect.h - g_renderer->getLineHeight(g_fontId)) / 2;
+        int tx = rect.x + (rect.w - tw) / 2;
+        int ty = rect.y + (rect.h - g_renderer->getLineHeight(g_fontId)) / 2;
+        if (hasHint) {
+          tx += kHintClearDx;
+          ty += kHintClearDy;
+        }
         // armed keys are filled black; draw the label in white (state=false)
         // so it stays legible instead of vanishing into the fill.
         g_renderer->drawText(g_fontId, tx, ty, label, !armed);
@@ -342,23 +371,15 @@ void oskDraw() {
       // a real keycap's dual legend (small shifted symbol above the main
       // character), so someone who doesn't remember e.g. Shift+7 = & can
       // still see it's coming rather than being surprised only after
-      // pressing Shift. Only for keys where Shift actually changes the
-      // character (digits/symbols) -- letters just case-shift, which
-      // doesn't need this treatment any more than a real keyboard dual-
-      // labels its letter keys.
-      if (k.label == nullptr && !(k.hid >= 0x04 && k.hid <= 0x1D)) {
-        const char plain = oskHidToChar(k.hid, currentModifiers() & ~OSK_MOD_SHIFT_LEFT);
-        const char shifted = oskHidToChar(k.hid, currentModifiers() | OSK_MOD_SHIFT_LEFT);
-        if (shifted != 0 && shifted != plain) {
-          char hint[2] = {shifted, '\0'};
-          // A few px clear of both the top and right edges rather than
-          // flush against them -- flush read as glued to the border on the
-          // physical panel.
-          constexpr int kHintMargin = 5;
-          const int hintW = g_renderer->getTextWidth(g_smallFontId, hint);
-          g_renderer->drawText(g_smallFontId, rect.x + rect.w - kInset - kHintMargin - hintW,
-                                rect.y + kInset + kHintMargin, hint, !armed);
-        }
+      // pressing Shift.
+      if (hasHint) {
+        // A few px clear of both the top and right edges rather than
+        // flush against them -- flush read as glued to the border on the
+        // physical panel.
+        constexpr int kHintMargin = 5;
+        const int hintW = g_renderer->getTextWidth(g_smallFontId, hint);
+        g_renderer->drawText(g_smallFontId, rect.x + rect.w - kInset - kHintMargin - hintW,
+                              rect.y + kInset + kHintMargin, hint, !armed);
       }
 
       cx += rect.w;

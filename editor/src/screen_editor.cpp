@@ -271,6 +271,16 @@ void screenEditorClearLogicalLine() {
 
 void screenEditorStartNewInputLine() {
   int rows = screenEditorRows();
+  // Descend from the *end* of the logical line the cursor is currently
+  // within, not from wherever the cursor happens to be sitting. Enter can
+  // be pressed from any row of a wrapped line (e.g. after arrowing back up
+  // to edit it), and the new line always belongs after the whole thing --
+  // not after just the one physical row the cursor was on. Without this,
+  // Enter from the first row of a 2+-row wrap landed the cursor on the
+  // wrap's own second row (still mid-logical-line), which read as a fresh
+  // line but wasn't: typing there and pressing Enter again would append to
+  // the line just registered instead of starting a new one.
+  cursorRow = logicalLineEndRow();
   cursorCol = 0;
   if (cursorRow < rows - 1) {
     cursorRow++;

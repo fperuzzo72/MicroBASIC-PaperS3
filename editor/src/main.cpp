@@ -41,6 +41,8 @@
 #include "osk.h"
 #include "screen_editor.h"
 #include "tb_bridge.h"
+#include <BleKeyboardHost.h>
+#include <UsbHidKeyboardHost.h>
 
 // Logging.h (pulled in transitively by the hal headers) redefines Serial as a
 // proxy whose methods this build does not link. The bring-up wants the plain
@@ -294,6 +296,32 @@ void screenEditorFlushDisplay() { drawScreen(); }
 // without the program having printed anything would otherwise sit invisible
 // until the next unrelated redraw.
 void pumpPhysicalButtonsForProgram() {
+  // A physical USB keyboard lands its reports on its own background task
+  // (see UsbHidKeyboardHost.h) regardless of whether loop() is blocked, but
+  // that task only fills UsbKbd's own internal queue -- something still has
+  // to drain it into enqueueKeyEvent() for checkch()'s break check
+  // (inputConsumeBreakPending()) or GET (inputReadProgramKey()) to ever see
+  // it. Without this, Ctrl+C/Escape from a physical keyboard would suffer
+  // exactly the dead-during-a-run bug touch had before pumpPhysicalButtonsForProgram()
+  // grew a body at all.
+  uint8_t kbdCode, kbdMods;
+  bool kbdPressed;
+  while (UsbKbd.popKey(kbdCode, kbdMods, kbdPressed)) {
+    enqueueKeyEvent(kbdCode, kbdMods, kbdPressed);
+  }
+
+  // Same reasoning as UsbKbd above, for the BLE keyboard: poll() drives its
+  // auto-reconnect and held-key aging (see BleKeyboardHost.h), and popKey()
+  // needs draining into enqueueKeyEvent() for Ctrl+C break to reach a
+  // running program. bleKbdAutoPair() is deliberately NOT called here --
+  // first-time scanning is slow and has no reason to run while a program is
+  // mid-execution; it only matters before any keyboard has ever been paired.
+  BleHid.poll();
+  freeink::KeyEvent bleEv;
+  while (BleHid.popKey(bleEv)) {
+    enqueueKeyEvent(bleEv.keycode, bleEv.mods, bleEv.pressed);
+  }
+
   input.update();
   float nx, ny;
   if (!input.wasTouchTap(nx, ny)) return;
@@ -302,11 +330,68 @@ void pumpPhysicalButtonsForProgram() {
   if (handleTouchTap(lx, ly)) screenEditorFlushDisplay();
 }
 
+// No pairing UI exists yet (menu/settings are still TODO -- see
+// input_handler.cpp's own TODOs), so this drives first-time pairing itself:
+// as long as nothing is bonded yet, scan for kBleScanDurationMs and connect
+// to the first HID-advertising, connectable device seen -- this project's
+// only physical-input use case is a keyboard, so unlike a general-purpose
+// pairing UI there's no need to discriminate keyboard vs. mouse vs. other
+// HID peripherals here. A successful connect() persists the bond via
+// BleKeyboardHost's own onLinkUp()->persistBonds(), and from then on
+// poll()'s built-in auto-reconnect (bondCount_ > 0) takes over on every
+// future boot -- this function only ever runs before that first bond
+// exists.
+static constexpr uint32_t kBleScanDurationMs = 5000;
+static constexpr uint32_t kBleScanRetryDelayMs = 3000;
+
+static void bleKbdAutoPair() {
+  if (BleHid.pairedCount() > 0) return;
+  if (BleHid.isConnected() || BleHid.isConnecting()) return;
+
+  static uint32_t nextScanAt = 0;
+  static bool scanArmed = false;
+  const uint32_t now = millis();
+
+  if (BleHid.isScanning()) {
+    scanArmed = true;
+    return;
+  }
+  if (scanArmed) {
+    scanArmed = false;
+    for (uint8_t i = 0; i < BleHid.deviceCount(); i++) {
+      const freeink::DiscoveredDevice& d = BleHid.device(i);
+      if (d.hid && d.connectable) {
+        BleHid.connect(d.addr);
+        break;
+      }
+    }
+    BleHid.releaseScanResults();
+    nextScanAt = now + kBleScanRetryDelayMs;
+    return;
+  }
+  if (now >= nextScanAt) {
+    BleHid.startScan(kBleScanDurationMs);
+    // Safety net in case isScanning() never reads true on some call (e.g.
+    // begin() not actually running) -- without this a stalled scan would
+    // permanently block retries rather than just wasting one cycle.
+    nextScanAt = now + kBleScanDurationMs + kBleScanRetryDelayMs;
+  }
+}
+
 void setup() {
+#if !FREEINK_CAP_USB_HID_KBD_HOST
   Serial.begin(115200);
   // Native USB CDC: the host needs time to enumerate before anything printed
   // here can reach it. A short delay loses the whole setup() trace.
   delay(3000);
+#endif
+  // With the USB HID Host capability on, Serial.begin() above is skipped on
+  // purpose: it and UsbKbd.begin() (below) both want the same native-USB PHY
+  // (see UsbHidKeyboardHost.h's own comment -- ESP32-S3 has exactly one, and
+  // USB-Serial-JTAG/CDC and USB-OTG Host are mutually exclusive on it).
+  // Calling Serial.print* without begin() is a normal, harmless no-op, so
+  // every other STEP()/Serial.printf() call below stays as-is rather than
+  // being conditionally compiled out one by one.
   Serial.println("\n=== MicroBASIC-PaperS3 bring-up ===");
   Serial.flush();
 #define STEP(msg) do { Serial.printf("[step] %s\n", msg); Serial.flush(); } while (0)
@@ -359,6 +444,18 @@ STEP("osk.init");
 STEP("inputSetup");
   inputSetup();
 
+STEP("UsbKbd.begin");
+  // No-op (returns false) when FREEINK_CAP_USB_HID_KBD_HOST is off -- see
+  // UsbHidKeyboardHost.h. Safe to call unconditionally either way.
+  UsbKbd.begin();
+
+STEP("BleHid.begin");
+  // Loads any previously-bonded keyboard from NVS -- if one exists, poll()
+  // (called every loop() below) starts trying to reconnect to it
+  // automatically. If none exists yet, bleKbdAutoPair() (also called from
+  // loop()) drives first-time scan-and-connect.
+  BleHid.begin("MicroBASIC-PaperS3");
+
 STEP("screenEditorSetMode");
   screenEditorSetMode(2);  // SCREEN 2 (64-col), this panel's default -- see README
 
@@ -387,6 +484,8 @@ void loop() {
     printDiagnostics("beat");
   }
 
+  bleKbdAutoPair();
+
   // Runs any autoexec.bas basicSetup() found at startup. Deliberately here,
   // not in setup() -- see tb_bridge.h's own comment: a launcher-style
   // program runs forever, and running it inside setup() means loop() (which
@@ -394,6 +493,18 @@ void loop() {
   // Internally guarded (checks st == SRUN) so calling this every iteration
   // after the first is a cheap no-op.
   tbRunPendingAutoexec();
+
+  uint8_t kbdCode, kbdMods;
+  bool kbdPressed;
+  while (UsbKbd.popKey(kbdCode, kbdMods, kbdPressed)) {
+    enqueueKeyEvent(kbdCode, kbdMods, kbdPressed);
+  }
+
+  BleHid.poll();
+  freeink::KeyEvent bleEv;
+  while (BleHid.popKey(bleEv)) {
+    enqueueKeyEvent(bleEv.keycode, bleEv.mods, bleEv.pressed);
+  }
 
   input.update();
 

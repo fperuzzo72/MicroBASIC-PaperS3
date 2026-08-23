@@ -10,6 +10,49 @@ and **no physical navigation buttons at all**. The second of those is what
 makes this a port rather than a new build target: every interaction has to be
 rebuilt for touch.
 
+## Sibling project
+
+MicroBASIC is not a fork of this repo, and this isn't a fork of it either —
+two separate repositories, each with its own history. The X4 is the full
+version: it started life as a copy of the MicroWriter firmware and carries,
+on top of BASIC, the prose editor, WiFi sync, a BLE keyboard, a file
+browser, and the VC picker.
+
+This port doesn't have those parts yet — but that's because it's a port in
+progress, not because they're out of scope by design. They're expected to
+land here eventually (the on-screen keyboard already has a working BLE
+keyboard alongside it — see the status note below). That means the shared
+surface below is going to grow, not stay stable, and the habit of carrying
+a fix to both sides matters more over time, not less.
+
+The two repositories stay separate either way: one tree serving both a
+touch panel with an on-screen keyboard and a button panel with a BLE
+keyboard would turn into conditional logic on top of conditional logic.
+
+Four areas are the same code in both projects today, and a fix in one is a
+fix in the other — this list will grow as `text_editor`, `file_manager`,
+and `ui_renderer` get ported over, each one adding another surface a fix
+has to cross:
+
+| Area | What it is |
+|---|---|
+| `research/fonts/tools/` | font pipeline: resizing, stem-width capping, header emission |
+| `editor/src/screen_editor.*` | the character grid, line wrapping, logical lines |
+| `editor/src/tb_*` | interpreter integration and the runtime contract |
+| `patches/tinybasic/` | the patch set over upstream |
+
+This isn't theoretical. In a single session, this port surfaced four defects
+that had been latent on the X4 for months — see `docs/DEVELOPMENT_LOG.md`
+for the full account, including two spots where this port's fix diverged
+from the X4's own. They showed up here first because a different panel size
+exercises assumptions the X4's own hardware never questions: glyph widths
+that aren't multiples of 8, a logical line wrapping into a different number
+of physical rows. Porting turned out to be a test suite nobody would have
+thought to write.
+
+When the text editor itself gets ported, it'll bring undo, `.bak` discard,
+and `ascii_fold` along with it — already done and confirmed on X4 hardware.
+
 ## Status
 
 **Milestones 1-3 — hardware bring-up, real SCREEN fonts, on-screen
@@ -72,12 +115,13 @@ hardware) and gives both the room they needed.
 With the terminal no longer sharing the panel with a permanently docked
 keyboard, it claims the **entire** 960×540 panel. The on-screen keyboard is a
 **toggleable overlay** instead — a "KBD" button (top-right) shows/hides it
-covering the bottom 300px (10 terminal rows) when needed; the intended real
-policy is a paired BLE keyboard is preferred and this is a reserve you summon
-on demand, not something permanently eating screen space (nothing here
-detects a real BLE keyboard yet, since `ble_keyboard.cpp` isn't ported — the
-toggle button demonstrates the show/hide mechanism the real policy will drive
-later).
+covering the bottom 300px (10 terminal rows) when needed. A paired BLE
+keyboard is preferred when one's available and the on-screen keyboard is the
+reserve you summon on demand, not something permanently eating screen space
+— **BLE keyboard pairing is done and confirmed working**: a "BLE" status
+button under the KBD toggle shows connection state at a glance and forces a
+fresh pairing scan on tap; see the on-screen-keyboard status note below for
+how automatic pairing/reconnect works.
 
 ### SCREEN modes
 
@@ -208,7 +252,11 @@ repo at `~/Desktop/M5PaperS3-backup/`, with their own `RESTAURAR.md`.
 2. BASIC interpreter and screen editor.
 3. File read/write, creating new `.txt` and `.bas` files.
 4. WiFi and the file-transfer web server.
-5. Bluetooth keyboard.
+5. **Bluetooth keyboard — done and confirmed on hardware.** Auto-pairs with
+   the first HID-advertising device seen (no pairing UI exists yet) and
+   auto-reconnects to the saved bond on every boot; falls back to scanning
+   again if the saved device doesn't answer for a while, or immediately on a
+   tap of the "BLE" status button.
 6. **On-screen keyboard — done and confirmed working well on real hardware.**
    Not on the original list, but not optional either: with no physical
    buttons and no keyboard paired, the device is otherwise mute at first

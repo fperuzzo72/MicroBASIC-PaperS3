@@ -82,6 +82,13 @@ static constexpr int TOGGLE_H = 30;
 static constexpr int TOGGLE_X = PANEL_W - TOGGLE_W;
 static constexpr int TOGGLE_Y = 0;
 
+// BLE status/pair button: same corner, stacked directly under the OSK
+// toggle -- same size, same reasoning.
+static constexpr int BLE_TOGGLE_W = TOGGLE_W;
+static constexpr int BLE_TOGGLE_H = TOGGLE_H;
+static constexpr int BLE_TOGGLE_X = TOGGLE_X;
+static constexpr int BLE_TOGGLE_Y = TOGGLE_Y + TOGGLE_H;
+
 // `display` is a global owned by the hal (declared extern in HalDisplay.h,
 // defined in HalDisplay.cpp) -- do not shadow it with a local instance.
 static GfxRenderer renderer(display);
@@ -225,6 +232,32 @@ static void drawToggleButton() {
   renderer.drawText(FONT_UI, tx, ty, label);
 }
 
+// Status + manual-pair button, stacked under the KBD toggle (see
+// BLE_TOGGLE_* above). Filled solid while a BLE keyboard is connected
+// (matches osk.cpp's own "armed" convention for Shift/Ctrl/Alt), outlined
+// otherwise -- so the connection state is visible at a glance without
+// needing to read anything. Tapping it always fires forceBlePairingNow()
+// (defined near bleKbdAutoPair() below, forward-declared here since this
+// file's touch handling is laid out above its BLE pairing logic).
+static void forceBlePairingNow();
+
+static void drawBleButton() {
+  const int inset = 2;
+  const bool connected = BleHid.isConnected();
+  if (connected) {
+    renderer.fillRect(BLE_TOGGLE_X + inset, BLE_TOGGLE_Y + inset, BLE_TOGGLE_W - 2 * inset,
+                       BLE_TOGGLE_H - 2 * inset, true);
+  } else {
+    renderer.drawRect(BLE_TOGGLE_X + inset, BLE_TOGGLE_Y + inset, BLE_TOGGLE_W - 2 * inset,
+                       BLE_TOGGLE_H - 2 * inset, true);
+  }
+  const char* label = "BLE";
+  const int tw = renderer.getTextWidth(FONT_UI, label);
+  const int tx = BLE_TOGGLE_X + (BLE_TOGGLE_W - tw) / 2;
+  const int ty = BLE_TOGGLE_Y + (BLE_TOGGLE_H - renderer.getLineHeight(FONT_UI)) / 2;
+  renderer.drawText(FONT_UI, tx, ty, label, !connected);
+}
+
 static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
   return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
 }
@@ -239,6 +272,10 @@ static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
 static bool handleTouchTap(int lx, int ly) {
   if (tapInRect(lx, ly, TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H)) {
     g_oskVisible = !g_oskVisible;
+    return true;
+  }
+  if (tapInRect(lx, ly, BLE_TOGGLE_X, BLE_TOGGLE_Y, BLE_TOGGLE_W, BLE_TOGGLE_H)) {
+    forceBlePairingNow();
     return true;
   }
   if (g_oskVisible) {
@@ -260,6 +297,7 @@ static void drawScreen() {
   renderer.clearScreen();
   drawTerminalContent();
   drawToggleButton();
+  drawBleButton();
   if (g_oskVisible) oskDraw();
 
   Serial.printf("[paint] displayBuffer(%s) ...\n", firstPaintDone ? "FAST" : "FULL");
@@ -331,33 +369,67 @@ void pumpPhysicalButtonsForProgram() {
 }
 
 // No pairing UI exists yet (menu/settings are still TODO -- see
-// input_handler.cpp's own TODOs), so this drives first-time pairing itself:
-// as long as nothing is bonded yet, scan for kBleScanDurationMs and connect
-// to the first HID-advertising, connectable device seen -- this project's
-// only physical-input use case is a keyboard, so unlike a general-purpose
-// pairing UI there's no need to discriminate keyboard vs. mouse vs. other
-// HID peripherals here. A successful connect() persists the bond via
-// BleKeyboardHost's own onLinkUp()->persistBonds(), and from then on
-// poll()'s built-in auto-reconnect (bondCount_ > 0) takes over on every
-// future boot -- this function only ever runs before that first bond
-// exists.
+// input_handler.cpp's own TODOs), so this drives pairing itself, in two
+// layers:
+//
+// 1. No bond yet: scan for kBleScanDurationMs and connect to the first
+//    HID-advertising, connectable device seen -- this project's only
+//    physical-input use case is a keyboard, so unlike a general-purpose
+//    pairing UI there's no need to discriminate keyboard vs. mouse vs.
+//    other HID peripherals here.
+//
+// 2. A bond exists but nothing is connecting: BleKeyboardHost's own poll()
+//    already retries a direct connect-by-address to the saved bond every
+//    few seconds on its own (see BleKeyboardHost.cpp's kReconnectBackoffMs)
+//    -- that's cheap and is given a fair run first. But a direct
+//    connect-by-address only succeeds if the peripheral happens to be
+//    advertising in the narrow window NimBLE's connect() looks for it in;
+//    it does nothing if the keyboard went to sleep and stopped general
+//    advertising, or if it needs to be put back into pairing mode (which
+//    some keyboards use a *different* advertisement for than their normal
+//    "reconnect to bonded host" one). Confirmed on hardware: after the
+//    keyboard's own idle timeout dropped the link, waiting for the direct
+//    reconnect alone never got it back, even with the keyboard back in
+//    pairing mode. So once kBleBondedRetryGraceMs has passed with no
+//    success, fall back to the same active-scan-and-connect path as case 1
+//    -- whatever a scan finds (the same keyboard re-advertising, or a
+//    different one entirely) gets connected and, via
+//    BleKeyboardHost::onLinkUp()->persistBonds(), becomes the new saved
+//    bond going forward.
+//
+// Either way, a successful connect() persists the bond, so this function's
+// scanning branch only ever actually runs while nothing usable is already
+// connected or being retried.
 static constexpr uint32_t kBleScanDurationMs = 5000;
 static constexpr uint32_t kBleScanRetryDelayMs = 3000;
+static constexpr uint32_t kBleBondedRetryGraceMs = 20000;
+
+// File-scope (not function-local) so forceBlePairingNow() -- the BLE
+// button's tap handler -- can reset them to skip straight to scanning,
+// instead of waiting out whatever grace period bleKbdAutoPair() is
+// currently in the middle of.
+static uint32_t g_bleIdleSinceMs = 0;
+static uint32_t g_bleNextScanAt = 0;
+static bool g_bleScanArmed = false;
 
 static void bleKbdAutoPair() {
-  if (BleHid.pairedCount() > 0) return;
-  if (BleHid.isConnected() || BleHid.isConnecting()) return;
-
-  static uint32_t nextScanAt = 0;
-  static bool scanArmed = false;
   const uint32_t now = millis();
 
+  if (BleHid.isConnected() || BleHid.isConnecting() || BleHid.isScanning()) {
+    g_bleIdleSinceMs = 0;  // something's actively in flight; only measure genuine idle stretches
+  } else if (g_bleIdleSinceMs == 0) {
+    g_bleIdleSinceMs = now;
+  }
+
+  if (BleHid.isConnected() || BleHid.isConnecting()) return;
+  if (BleHid.pairedCount() > 0 && (now - g_bleIdleSinceMs) < kBleBondedRetryGraceMs) return;
+
   if (BleHid.isScanning()) {
-    scanArmed = true;
+    g_bleScanArmed = true;
     return;
   }
-  if (scanArmed) {
-    scanArmed = false;
+  if (g_bleScanArmed) {
+    g_bleScanArmed = false;
     for (uint8_t i = 0; i < BleHid.deviceCount(); i++) {
       const freeink::DiscoveredDevice& d = BleHid.device(i);
       if (d.hid && d.connectable) {
@@ -366,16 +438,29 @@ static void bleKbdAutoPair() {
       }
     }
     BleHid.releaseScanResults();
-    nextScanAt = now + kBleScanRetryDelayMs;
+    g_bleNextScanAt = now + kBleScanRetryDelayMs;
     return;
   }
-  if (now >= nextScanAt) {
+  if (now >= g_bleNextScanAt) {
     BleHid.startScan(kBleScanDurationMs);
     // Safety net in case isScanning() never reads true on some call (e.g.
     // begin() not actually running) -- without this a stalled scan would
     // permanently block retries rather than just wasting one cycle.
-    nextScanAt = now + kBleScanDurationMs + kBleScanRetryDelayMs;
+    g_bleNextScanAt = now + kBleScanDurationMs + kBleScanRetryDelayMs;
   }
+}
+
+// The BLE button's tap action (see BLE_TOGGLE_* / drawBleButton() /
+// handleTouchTap()): drop whatever's currently connected and jump straight
+// to scanning on the very next bleKbdAutoPair() call, rather than silently
+// waiting out kBleBondedRetryGraceMs. Lets someone pair a *different*
+// keyboard on demand without waiting for the current one to time out, and
+// gives an immediate, visible response to the tap.
+static void forceBlePairingNow() {
+  if (BleHid.isConnected()) BleHid.disconnect();
+  g_bleIdleSinceMs = 1;  // nonzero and already older than kBleBondedRetryGraceMs
+  g_bleNextScanAt = 0;
+  g_bleScanArmed = false;
 }
 
 void setup() {
@@ -500,10 +585,19 @@ void loop() {
     enqueueKeyEvent(kbdCode, kbdMods, kbdPressed);
   }
 
+  static bool wasBleConnected = false;
   BleHid.poll();
   freeink::KeyEvent bleEv;
   while (BleHid.popKey(bleEv)) {
     enqueueKeyEvent(bleEv.keycode, bleEv.mods, bleEv.pressed);
+  }
+  // The BLE button reflects live connection state (see drawBleButton()),
+  // but that state changes asynchronously -- a keyboard can connect or time
+  // out with nobody touching the screen. Without this, the button would
+  // only catch up to reality on whatever unrelated redraw happened next.
+  if (BleHid.isConnected() != wasBleConnected) {
+    wasBleConnected = BleHid.isConnected();
+    screenDirty = true;
   }
 
   input.update();

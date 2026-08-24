@@ -32,6 +32,16 @@ void tbSetup() {
   // Depois do cabecalho, nao antes: a primeira linha da tela e a
   // identificacao da maquina, e um aviso de arranque vem abaixo dela.
   if (!autoexecEnabled) screenEditorTermPrintLine("Skipping autoexec.bas (BACK held)");
+  // Create /MicroBASIC/programs up front, not lazily. ofileopen() (SAVE)
+  // already calls this same ensureDir() itself, so a fresh SD card was
+  // never actually a problem for SAVE -- but LOAD, CATALOG/DIR/FILES, and
+  // basicSetup()'s own autoexec.bas probe right below all just open a path
+  // and fail if it's not there yet, with nothing else that would have
+  // created it first on a card that's never had a program saved to it.
+  // fsbegin() itself already existed (tb_runtime.cpp) but was reachable
+  // only through a debug-only interpreter command, never at boot.
+  fsbegin();
+
   // basicSetup() probes for an autoexec.bas -- `if (ifileopen(...))`, where
   // failing is the ordinary case. Without this, every boot without one
   // printed a two-line file-failure report above the interpreter's banner.

@@ -675,6 +675,24 @@ void loop() {
     screenDirty = true;
   }
 
+  // Some peripherals (security-conscious ones especially -- e.g. business
+  // keyboards) require Passkey Entry pairing instead of Just Works: the
+  // *host* displays a 6-digit code and the user types it on the
+  // *peripheral's own keys* to confirm. NimBLEDevice::setSecurityPasskey()
+  // fixes ours at 123456 (see BleKeyboardHost::begin()), so the code is
+  // always the same, but nothing surfaced it anywhere -- a keyboard
+  // requiring this method would sit waiting for a code nobody was ever
+  // shown, reading as "won't pair" with no visible error. Print it to the
+  // terminal itself, same as the boot banner and every other message here.
+  uint32_t passkey;
+  if (BleHid.takePairingPasskey(passkey)) {
+    char msg[48];
+    snprintf(msg, sizeof(msg), "[ble] pairing code: %06lu (type on keyboard)",
+              (unsigned long)passkey);
+    screenEditorTermPrintLine(msg);
+    screenDirty = true;
+  }
+
   input.update();
 
   float nx, ny;

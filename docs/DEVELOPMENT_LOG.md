@@ -168,17 +168,32 @@ effect: the device kept booting into `crossp` normally on every test since).
 Erasing was still the right instinct, just aimed with the wrong map -- next
 time, read the live table first rather than trusting `partitions.csv`.
 
-That erase is a one-time reset, not a permanent fix: nothing stops the same
-16KB from filling up again over normal use, one saved network or one new
-BLE pairing at a time. If it recurs, the real fix is enlarging `nvs` in the
-partition table, which conflicts with the match-CrossPoint constraint above
-and needs a real decision, not a quiet change.
+That erase was a one-time reset, not a permanent fix: nothing stopped the
+same 16KB from filling up again over normal use, one saved network or one
+new BLE pairing at a time.
 
-## partitions.csv doesn't match the real device
+**Permanently fixed 2026-08-24.** Once the device stopped needing
+M5Launcher (see "The EPD rail was never powered" below), the
+match-CrossPoint constraint that kept `nvs` at 16KB stopped applying —
+their web flasher no longer has to be able to write this layout. The
+partition table was rewritten with `nvs` at **32KB**, which is what the
+device runs now and what `editor/partitions.csv` describes. Note the same
+`erase_region 0x9000 0x5000` command *is* correct against this layout, by
+coincidence rather than design — it now lands exactly inside the 32KB
+partition.
+
+## partitions.csv doesn't match the real device — RESOLVED
+
+**Resolved 2026-08-24**: the device now runs the layout in
+`editor/partitions.csv`, verified by reading `0x8000` back through
+`gen_esp32part.py`. `platformio.ini`'s `maximum_size` and `offset_address`
+were brought in step with it at the same time. Keep all three together if
+the layout changes again. The rest of this entry is kept for the record,
+since the drift it describes caused two separate misfires.
 
 `editor/partitions.csv` (referenced by `platformio.ini`'s
 `board_build.partitions`, and the source of the wrong 20KB assumption
-above) describes a partition table that has never actually been on this
+above) described a partition table that had never actually been on this
 device: 20KB `nvs` at the right offset but the wrong size, `otadata` at a
 different offset, `app0`/`app1` at 6400KB apiece with an `spiffs` partition
 neither the real table nor this project uses, no separate `phy_init`
@@ -205,86 +220,85 @@ turned out to matter here because one number derived from it (the size
 ceiling) leaked into a place that does matter, and that number is now
 fixed at its source instead.
 
-## EPD stays dark without Launcher
+## The EPD rail was never powered
 
-This device's firmware only draws anything when M5Stack's own Launcher
-(the picker menu at `app0`) runs first. Flashed and booted entirely on its
-own -- same bootloader, same app code either way -- the app runs completely
-normally: SD card mounts, WiFi connects, BLE pairs, the whole serial boot
-log looks identical to a working boot. The EPD panel itself just never
-updates, staying on whatever was on screen before (or blank, on a truly
-cold boot). Not a crash, not a hang -- the firmware is alive and well; the
-panel alone doesn't respond.
+**Symptom.** Booted on its own, without M5Stack's Launcher having run
+first, the firmware came up completely normally -- SD mounted, WiFi
+connected, BLE paired, full boot log -- and the panel never changed. Not a
+crash, not a hang. Every draw call returned success with plausible timings
+(`[GFX] Time = 29 ms from clearScreen to displayBuffer`, `[paint] returned
+after 461 ms`). Only the glass disagreed.
 
-**First hypothesis, ruled out: the bootloader itself.** The original
-(pre-this-investigation) theory was that a freshly-compiled bootloader was
-somehow different from Launcher's own -- confirmed once, early on, via A/B:
-same app, panel dead under a from-scratch bootloader, working under
-Launcher's. That test conflated two variables at once, though: a different
-bootloader *and* a different first app to run (since replacing the
-bootloader also meant Launcher's own app never ran). This session finally
-separated them with a controlled test: this project's own known-working
-firmware, written as the *only* app on the device (a from-scratch 3-partition
-table -- NVS, otadata, one 3MB `app0`, coredump -- built and verified with
-`gen_esp32part.py`, flashed under the *same* bootloader already proven to
-work), still came up with a dark panel on boot, log identical to every other
-"works over serial, panel stays dark" case. The bootloader is not the
-variable. (Getting to this clean test took two false starts: once, the
-firmware image was simply too large for the undersized real `app0` partition
---1,762,768 bytes into a 1,572,864-byte slot -- which the bootloader
-correctly rejected outright rather than silently overflowing, an
-inconclusive, self-inflicted result, not a hardware finding.)
+**Root cause**, in `freeink-sdk`'s `LgfxEpdDriver.cpp`:
+`FreeInkBusEPD::powerControl()` overrode LovyanGFX's
+`lgfx::Bus_EPD::powerControl()` and never called the base implementation --
+it ran the board's power hook and returned. That is right for LilyGo T5S3,
+whose rails sit behind an I2C PMIC: there the hook *is* the power-up, and
+the base class must not drive its `pin_pwr`/`pin_oe` (parked on a
+placeholder GPIO). It is wrong for M5PaperS3, whose hooks are all `nullptr`
+-- nothing replaced the base sequence, so this never ran:
 
-**Second hypothesis, confirmed: M5Stack's own `M5GFX`/`M5Unified` libraries
-do something at boot that this project's own from-scratch EPD driver
-doesn't.** Every third-party PaperS3 project found that draws successfully
-without going through M5Stack's own Launcher or UIFlow2 first goes through
-`M5GFX`/`M5Unified` directly (confirmed for
-[bmorcelli/Launcher](https://github.com/bmorcelli/Launcher) itself,
-`gebeto/microreader-paper-s3`, and a Sudoku gist by `palaniraja`) -- none of
-them reimplement the EPD bus from scratch the way this SDK does. Reading
-`M5GFX.cpp`'s own `board_M5PaperS3` autodetect code found the likely
-mechanism: right after identifying the board and before constructing
-`Bus_EPD`/`Panel_EPD`, it electrically fingerprints GPIO41/42 (the touch
-I²C pins: drive both low, then high, then read back as inputs with a
-pulldown -- both must still read HIGH, proof an external pull-up survives
-it), then probes I²C for a GT911 answering at `0x14` or `0x5D`, and only if
-that succeeds does it assert GPIO44 (`PWROFF_PULSE_PIN`) LOW. This project's
-own `BoardConfig.h` had previously assumed (marked PENDING) that no
-boot-time hold/enable pin was needed here, reasoning the board "appears to
-self-latch through its own power-button circuit" -- true for staying
-powered on, apparently not true for the EPD rail specifically.
+```cpp
+lgfx::gpio_hi(_config.pin_oe);    // GPIO45
+lgfx::gpio_hi(_config.pin_pwr);   // GPIO46  <- the EPD rail
+lgfx::gpio_hi(_config.pin_spv);   // GPIO17
+```
 
-**Two attempts at porting this into `freeink::m5papers3::prepare()`
-(wired into `LgfxEpdConfig::power.prepare`, called by `LgfxEpdDriver`
-before the EPD bus is touched at all) did not fix it:**
+`Bus_EPD::init()` configures all three as outputs, so they sat as outputs
+driving LOW. The panel's electronics were simply never switched on. The SoC
+doesn't care, which is why everything else worked and every diagnostic
+lied. The panel is driven open-loop -- fixed waveform durations, no
+ready/ack line to poll -- so nothing downstream can notice.
 
-1. Porting *only* the isolated `pinMode(44, output); gpio_lo(44);` line
-   made things **worse** -- a harder, earlier hang with no boot log at all,
-   not even the otherwise-normal "runs fine, panel dark" boot this SDK
-   already reproduced.
-2. Porting the *full* sequence (fingerprint, then a real GT911 probe over
-   `Wire`, then the GPIO44 write gated on finding it) fared differently
-   depending on context: under the *new* single-partition table (no
-   Launcher involved at all), it completed a clean full boot including a
-   successful-looking `displayBuffer()` call -- but the panel still didn't
-   show the correct content, later runs of the same build produced a real
-   brownout at boot, and a version with added `Serial.printf` diagnostics
-   around each stage hung *before Serial output started at all*, hard
-   enough that the only recovery was holding the device into its ROM
-   download-mode strap and reflashing from there (a physical reset, and
-   even a normal power-cycle, did not bring the USB serial port back).
+One line, in the end: delegate to the base class when the board supplied no
+power hooks.
 
-Both attempts were reverted; the device is back on the original 6-partition
-table with Launcher's own bootloader and app0, and this project's firmware
-in `crossp`, the only currently-confirmed-working arrangement. The exact
-missing piece is still open -- plausibly something in `Panel_EPD`/`Bus_EPD`'s
-own internal state that depends on timing or ordering not yet matched, or a
-step elsewhere in `M5GFX::begin()` not yet identified. Whoever picks this up
-next: instrument before guessing again -- the two attempts above show this
-hardware punishes an incomplete port of this sequence more than having none
-of it at all, and the failure modes get *worse*, not better, between
-attempts, which is a warning sign, not noise to iterate past casually.
+**Why it looked like a bootloader problem for so long.** The panel *did*
+work once M5Stack's Launcher had run, because Launcher's own `M5GFX` drove
+those same pins on its way past and they stayed up across the handoff. An
+early A/B seemed to nail it: freshly-compiled bootloader -> dark panel,
+Launcher's bootloader -> working panel. But both halves of that A/B ran the
+same buggy `powerControl()`, and the real variable -- whether Launcher's
+app had run at all -- moved together with the bootloader in every trial.
+That single conflated experiment set the direction for a long time, and
+several days of work inherited its premise.
+
+**What the wrong premise cost, and what actually broke it.** Three things
+were tried against the bootloader theory before the real cause surfaced,
+each making the device worse rather than better: porting M5GFX's isolated
+`gpio_lo(GPIO44)` line (harder hang, no serial output at all), porting its
+full GT911-fingerprint-then-GPIO44 sequence (clean boot, panel still dark,
+and a genuine brownout on a later run), and rewriting the partition table
+to boot standalone (which did boot, and still didn't draw). Only the last
+of those was a *clean* experiment -- one variable, this firmware as the
+only app under the already-proven bootloader -- and its result is what
+finally killed the bootloader theory outright, because the panel stayed
+dark with the bootloader held constant.
+
+The fix came from reading our own code against the vendor's rather than
+running another trial: comparing `FreeInkBusEPD::powerControl()` side by
+side with `lgfx::Bus_EPD::powerControl()` shows the missing three lines
+immediately. That comparison was available from the first day.
+
+**Lessons worth keeping.**
+
+* An override that *replaces* a vendor base-class method, rather than
+  wrapping it, is a defect waiting for the board whose config supplies
+  nothing to replace it with. The hook design assumed every board would
+  bring its own power topology; the one board that didn't got no power
+  topology at all.
+* `LgfxEpdConfig::pinPwr`'s own comment said the rail was "driven by
+  LovyanGFX's own `Bus_EPD::powerControl`" -- the documented contract was
+  correct and the code didn't honor it. When a comment and the behavior
+  disagree, that gap is the bug, not a stale comment.
+* This is the second silent failure in this same driver (see 7f549b7,
+  which surfaced a discarded `init()` return for the same reason). An
+  open-loop panel gives no feedback, so the driver has to be read, not
+  observed.
+* When a test changes two things at once, its result is worth about
+  nothing, and it is much more expensive than a wasted afternoon: it
+  points every later effort in one direction and stays unquestioned
+  because it felt like evidence.
 
 ## Unconfirmed lead: possible tokenizer string-literal corruption
 

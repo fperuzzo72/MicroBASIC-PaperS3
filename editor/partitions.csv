@@ -1,8 +1,15 @@
-# Matches CrossPoint's standard partition table so their web flasher always works.
+# Matches what is actually on the dev unit (verified by reading 0x8000 back
+# with gen_esp32part.py). MicroBASIC is the only app: no launcher, no second
+# OTA slot, no SPIFFS -- this firmware keeps its files on the SD card.
+#
+# nvs is 32K, not the 16K the stock M5 layout used: that one was too small to
+# hold BLE bonds + saved WiFi credentials + the WiFi radio's own PHY
+# calibration blob at the same time, and the calibration write silently
+# failing is what stopped WiFi from associating at all. See
+# docs/DEVELOPMENT_LOG.md's "WiFi never actually connected".
+#
 # Name,    Type, SubType,  Offset,    Size,     Flags
-nvs,       data, nvs,      0x9000,    0x5000,
-otadata,   data, ota,      0xe000,    0x2000,
-app0,      app,  ota_0,    0x10000,   0x640000,
-app1,      app,  ota_1,    0x650000,  0x640000,
-spiffs,    data, spiffs,   0xc90000,  0x360000,
-coredump,  data, coredump, 0xFF0000,  0x10000,
+nvs,       data, nvs,      0x9000,    0x8000,
+otadata,   data, ota,      0x11000,   0x2000,
+app0,      app,  test,     0x20000,   0x300000,
+coredump,  data, coredump, 0x320000,  0x10000,

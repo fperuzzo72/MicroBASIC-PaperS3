@@ -10,22 +10,14 @@ and **no physical navigation buttons at all**. The second of those is what
 makes this a port rather than a new build target: every interaction has to be
 rebuilt for touch.
 
-**This firmware currently only draws anything when M5Stack's own Launcher
-runs first.** Flashed and booted on its own — same bootloader, same
-partition table, nothing else different — the app runs completely normally
-(SD card, WiFi, BLE, the whole boot log) but the EPD panel itself never
-updates and stays on whatever was on screen before. A day of investigation
-(see `docs/DEVELOPMENT_LOG.md`'s "EPD stays dark without Launcher" entry)
-narrowed this down to a real, specific cause — M5Stack's own `M5GFX`/
-`M5Unified` libraries do a board-specific wake-up step for this panel that
-this project's own from-scratch EPD driver doesn't yet replicate correctly
-— and ruled out the bootloader itself as a factor along the way (a clean,
-controlled test: this project's own known-working firmware, placed as the
-*only* app on the device, under the *same* already-proven bootloader,
-still didn't draw). Two attempts at porting just that missing step did not
-work yet — one hung earlier than before, one boots clean but the panel
-still doesn't update. Until that's solved, **flashing this without Launcher
-already on the device leaves the screen dark**; see "Flashing" below.
+**Runs standalone — no launcher, no dependencies.** This was not true until
+2026-08-24: the panel only drew if M5Stack's own Launcher had run first,
+which looked for a long time like this port needing Launcher's bootloader.
+It turned out to be a one-line bug in this project's own EPD driver, which
+never drove the panel's power rail and quietly relied on Launcher having
+left those pins high. See `docs/DEVELOPMENT_LOG.md`'s "The EPD rail was
+never powered" — the failure mode is worth knowing about, because every
+diagnostic said "success" the whole time.
 
 ## How it works
 
@@ -315,69 +307,40 @@ individually reasonable.
 
 ## Flashing
 
-**Never `pio run -t upload`, and never write to `0x10000`.** That writes
-bootloader.bin + the partition table + otadata + the app — not just the
-app — silently replacing M5Launcher's own bootloader with one this
-project's `platformio.ini` compiles. `0x10000` (`app0`) is also not
-"whatever's convenient" — it is M5Launcher's actual code, the thing that
-runs on every boot and decides what to load next; overwriting it breaks the
-picker, not just this build.
+The dev unit now runs MicroBASIC as the only app on the device, on the
+minimal partition table in `editor/partitions.csv`:
 
-On top of that, **this device currently needs Launcher's app to run at
-least once before this firmware's own EPD writes take visible effect** —
-see the note at the top of this README and `docs/DEVELOPMENT_LOG.md`'s "EPD
-stays dark without Launcher" entry for the investigation. A controlled test
-this session (this firmware as the *only*, correctly-sized app on the
-device, under the *same* bootloader that's already proven to work) still
-came up with a dark panel, which rules the bootloader itself out — so this
-isn't really about protecting "M5Launcher's bootloader" specifically, it's
-about not losing the one thing on this device that's confirmed to wake the
-panel up. Until the real fix lands, **never restore the full-flash backup's
-bootloader+partition-table region without also keeping Launcher's own app
-in `app0`** — that combination is the only currently-known-working state.
+```
+nvs       data  nvs      0x9000     32K
+otadata   data  ota      0x11000     8K
+app0      app   test     0x20000     3M   <- MicroBASIC (~1.7MB used)
+coredump  data  coredump 0x320000   64K
+```
 
-The safe recipe: build the app only, then write *just* `firmware.bin` into
-an existing **app-type OTA partition that is not `app0`**, with plain
-esptool — never bootloader.bin, partitions.bin, or otadata:
+Build the app, then write *just* `firmware.bin` at the app offset:
 
 ```bash
 esptool.py --chip esp32s3 --port <port> --baud 921600 \
-    write_flash <slot offset> .pio/build/m5papers3/firmware.bin
+    write_flash 0x20000 .pio/build/m5papers3/firmware.bin
 ```
 
-Read the live partition table first (`esptool read_flash 0x8000 0xC00` +
-`gen_esp32part.py`) — offsets change whenever slots are added or removed.
-Re-verified against the physical device on 2026-08-24 (unchanged since
-2026-08-21, as expected — this table has never actually been reflashed):
+Read the live table first if in any doubt (`esptool read_flash 0x8000
+0xC00` piped through `gen_esp32part.py`) — offsets move whenever the layout
+is changed, and this one has been changed.
 
-```
-nvs       data  nvs      0x9000    16K
-otadata   data  ota      0xd000     8K
-phy_init  data  phy      0xf000     4K
-app0      app   test     0x10000  1536K   <- M5Launcher, NEVER write here
-coredump  data  coredump 0x190000   64K
-crossp    app   ota_0    0x1a0000 5312K   <- currently holds MicroBASIC,
-                                             not the real reader (CrossPoint)
-```
-
-`crossp` is where this project's own testing has been landing (CrossPoint's
-own binary is not currently in flash on the dev unit — restore it from
-`~/Desktop/M5PaperS3-backup/` if the reader itself is needed again). After
-flashing, power-cycle the physical button rather than triggering an esptool
-soft reset — Launcher decides what to load on every boot and has an
-intermittent bug where it doesn't always auto-load the last-used firmware,
-needing a manual tap-through.
+**Still worth not writing `0x0` casually.** The bootloader currently on the
+device is M5Launcher's original, never overwritten. It is no longer
+*believed* to be load-bearing — the "only Launcher's bootloader works"
+theory was disproven, see the note at the top of this README — but a
+freshly-compiled bootloader hasn't been tested since the real bug was
+fixed, so "probably fine" is the honest status, not "verified". If you do
+replace it and the panel goes dark, that's the thing to undo first.
 
 Full-flash backups of the dev unit (bootloader + partition table + every
 app, restorable in one `write_flash 0x0 <backup>.bin`) live outside this
-repo at `~/Desktop/M5PaperS3-backup/`, with their own `RESTAURAR.md`.
-
-**`editor/partitions.csv` does not match the table above.** It's used only
-for two build-time things — the app-size ceiling PlatformIO checks against,
-and (if the hard rule above were ever violated) what it would flash — and
-since the real device's table is never touched, nothing keeps the two in
-sync automatically. See `docs/DEVELOPMENT_LOG.md`'s "partitions.csv doesn't
-match the real device" entry for what this already caused.
+repo at `~/Desktop/M5PaperS3-backup/`, with their own `RESTAURAR.md`. Three
+of them, including one taken with M5Launcher + CrossPoint intact, which is
+what to restore if the Launcher menu is ever wanted back.
 
 ## What has to work
 
@@ -417,8 +380,11 @@ Things the PaperS3 makes newly possible, or newly necessary:
   turn this board off. `freeink::m5papers3::powerOff()`.
 - **`SCREEN 4` (graphics)** was never built on the X4 for want of RAM. A 1-bit
   960×540 framebuffer is 63KB against 8MB of PSRAM here.
-- **Dual-boot/OTA** is M5Launcher's job on this device, so `OtaBootSwitch`
-  most likely does not come across at all.
+- **Dual-boot/OTA** was M5Launcher's job on this device, so `OtaBootSwitch`
+  most likely does not come across at all. Now that the device boots
+  straight into MicroBASIC with no launcher, there's no picker in front of
+  it either — reflashing means esptool, or a self-update path this project
+  would have to grow itself.
 
 ## License
 

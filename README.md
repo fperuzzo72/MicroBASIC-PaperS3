@@ -10,6 +10,121 @@ and **no physical navigation buttons at all**. The second of those is what
 makes this a port rather than a new build target: every interaction has to be
 rebuilt for touch.
 
+**This firmware currently only draws anything when M5Stack's own Launcher
+runs first.** Flashed and booted on its own — same bootloader, same
+partition table, nothing else different — the app runs completely normally
+(SD card, WiFi, BLE, the whole boot log) but the EPD panel itself never
+updates and stays on whatever was on screen before. A day of investigation
+(see `docs/DEVELOPMENT_LOG.md`'s "EPD stays dark without Launcher" entry)
+narrowed this down to a real, specific cause — M5Stack's own `M5GFX`/
+`M5Unified` libraries do a board-specific wake-up step for this panel that
+this project's own from-scratch EPD driver doesn't yet replicate correctly
+— and ruled out the bootloader itself as a factor along the way (a clean,
+controlled test: this project's own known-working firmware, placed as the
+*only* app on the device, under the *same* already-proven bootloader,
+still didn't draw). Two attempts at porting just that missing step did not
+work yet — one hung earlier than before, one boots clean but the panel
+still doesn't update. Until that's solved, **flashing this without Launcher
+already on the device leaves the screen dark**; see "Flashing" below.
+
+## How it works
+
+### Commands
+
+Three commands are this project's own, intercepted before the line ever
+reaches the interpreter (`editor/src/input_handler.cpp`):
+
+| Command | Does |
+|---|---|
+| `SCREEN` | prints the current mode (0-3) |
+| `SCREEN <n>` | switches to that mode (see the table below) |
+| `FILES`, `DIR` | aliases for `CATALOG` — list `/MicroBASIC/programs` |
+| `SYNC` | opens the WiFi file-transfer wizard — same as tapping the "SYNC" status button |
+
+Everything else — `PRINT`, `LET`, `INPUT`, `IF`/`THEN`, `FOR`/`NEXT`,
+`GOSUB`/`RETURN`, `DIM`, `READ`/`DATA`, `LOAD`, `SAVE`, `CATALOG`, `DELETE`,
+`RUN`, `LIST`, `NEW`, `CLS`, `LOCATE`, `GET`, and the rest of the language —
+is Stefan Lenz's TinyBASIC (vendored in `editor/lib/TinyBasic/basic.c`,
+patched in `patches/tinybasic/`). For the full language reference, see
+[slviajero/tinybasic](https://github.com/slviajero/tinybasic). `LOAD`/`SAVE`/
+`CATALOG`/`DELETE` all operate on `/MicroBASIC/programs` on the SD card,
+created automatically at boot if missing.
+
+### Keyboard
+
+Two independent input paths, both feeding the same key queue — the editor,
+dead-key handling, and BASIC's `GET` don't know or care which one a
+keystroke came from.
+
+**On-screen.** Always available; the "KBD" status button (top right)
+shows/hides it. Full US-International layout with dead-key composition.
+Forced visible for the whole WiFi wizard (see SYNC below), even if a BLE
+keyboard is connected, so losing BLE mid-flow never strands the wizard with
+no way to type.
+
+**BLE.** Starts only when the "BLE" status button is tapped — not
+automatically at boot. (This is deliberate, not an oversight: starting BLE
+unconditionally at boot meant it was also live during every WiFi connect
+attempt, which is its own problem — see below.) Once started:
+
+- Auto-pairs with the first HID-advertising keyboard it finds (no pairing
+  picker UI exists yet — one device at a time).
+- Auto-reconnects to that saved bond for the rest of the session.
+- If reconnecting doesn't succeed for **20 seconds**, falls back to scanning
+  for any HID-advertising device again — including a *different* keyboard,
+  not just the same one.
+- Tapping "BLE" again jumps straight to a fresh scan immediately, skipping
+  that 20-second wait — the way to deliberately pair a different keyboard
+  without powering off the old one first.
+- The "BLE" status button reflects live connection state (filled = connected,
+  outlined = not) so this is visible at a glance, not just inferred from
+  whether typing works.
+- Passkey-pairing keyboards (not Just Works) show their 6-digit code in the
+  terminal — the interpreter always generates `123456`, so it's really just
+  a confirmation prompt, not a real per-device code.
+
+**BLE and WiFi can't both be radio-active at the same time** (a documented
+ESP32-S3 coexistence limitation, not a bug in either): connecting to WiFi
+suspends BLE entirely for the ~1-25 seconds the connection attempt takes,
+then resumes it automatically once that concludes (success, timeout, or
+cancel). The keyboard reconnects on its own; nothing needs to be re-paired.
+
+### SYNC — WiFi file transfer
+
+Reached by tapping the "SYNC" status button or typing `SYNC`. No
+sync/reading-progress feature (that's the X4/MicroSlate-inherited part this
+port deliberately doesn't carry over) — just a network picker, a password
+entry, and a small HTTP file server.
+
+1. **Scanning** — lists nearby networks, `[saved]` marks ones with a stored
+   password, `(locked)` marks ones that need one.
+2. **Network list** — Up/Down (physical, BLE, or on-screen keyboard) moves
+   an inverted highlight bar; Enter selects.
+3. If the network has a saved password, it **auto-connects** immediately.
+   Otherwise, **password entry** — typed characters show as `*`.
+4. **Connecting** — up to **25 seconds**. Esc cancels at any point.
+5. On success, a **new** password gets a yes/no save prompt; a **saved**
+   password that's since stopped working (after a 25s timeout) gets a
+   yes/no forget prompt instead.
+6. **Syncing** — the status line shows a URL:
+   `http://<device-ip>/` (the mDNS name `microbasic-papers3.local` may also
+   work, depending on the network/OS). Open that on a computer on the same
+   network: a drag-and-drop page for uploading/downloading `.bas` programs
+   against `/MicroBASIC/programs`.
+7. Esc at any point (or leaving the SYNC screen) tears the WiFi connection
+   and the HTTP server down cleanly.
+
+Credentials are saved in NVS (and mirrored to `/MicroBASIC/wifi.json` on the
+SD card) — see `docs/DEVELOPMENT_LOG.md`'s "WiFi never actually connected"
+entry for a real bug this hit (an undersized NVS partition silently blocking
+the WiFi radio's own calibration) if WiFi ever stops connecting again after
+heavy BLE-pairing/WiFi-credential testing in one session.
+
+### SCREEN modes
+
+See the table under "Screen geometry" below for the four resolutions and
+their column/row counts.
+
 ## Sibling project
 
 MicroBASIC is not a fork of this repo, and this isn't a fork of it either —
@@ -18,10 +133,11 @@ version: it started life as a copy of the MicroWriter firmware and carries,
 on top of BASIC, the prose editor, WiFi sync, a BLE keyboard, a file
 browser, and the VC picker.
 
-This port doesn't have those parts yet — but that's because it's a port in
-progress, not because they're out of scope by design. They're expected to
-land here eventually (the on-screen keyboard already has a working BLE
-keyboard alongside it — see the status note below). That means the shared
+Two of those four are already here: **BLE keyboard** and **WiFi** (as file
+transfer, not the X4's own reading-progress sync — see "How it works"
+above). The prose editor and the file browser are still missing, and that's
+because this is a port in progress, not because they're out of scope by
+design — they're expected to land here eventually. That means the shared
 surface below is going to grow, not stay stable, and the habit of carrying
 a fix to both sides matters more over time, not less.
 
@@ -53,15 +169,18 @@ thought to write.
 When the text editor itself gets ported, it'll bring undo, `.bak` discard,
 and `ascii_fold` along with it — already done and confirmed on X4 hardware.
 
-## Status
+## Status — v0.4
 
-**Milestones 1-3 — hardware bring-up, real SCREEN fonts, on-screen
-keyboard — done and confirmed on real hardware.** `editor/src/main.cpp` is a
-bring-up program, not the firmware: it proves the EPD, the GT911 touch panel
-and the SD card; fills the terminal grid with real glyphs so legibility could
-be judged on the physical panel rather than assumed; and demonstrates a full
-touch keyboard (`osk.cpp`/`osk.h`) by echoing typed, US-International-composed
-text into that grid.
+This is a working computer now, not a bring-up demo: BASIC with a full
+screen editor, LOAD/SAVE/CATALOG against the SD card, four SCREEN text
+resolutions, a BLE keyboard and an on-screen one, and WiFi file transfer —
+see "How it works" below for the full reference. `editor/src/main.cpp` is
+the actual firmware's entry point.
+
+The panel, touch, and SD card bring-up that v0.1-0.3 proved out are still
+in there underneath: real glyphs on the physical panel rather than assumed
+legible, and a full touch keyboard (`osk.cpp`/`osk.h`) doing US-International
+dead-key composition.
 
 Landscape, not portrait: an early portrait build (540px wide) worked but felt
 cramped — both the terminal text and the keyboard keys read as too small on
@@ -118,10 +237,7 @@ keyboard, it claims the **entire** 960×540 panel. The on-screen keyboard is a
 covering the bottom 300px (10 terminal rows) when needed. A paired BLE
 keyboard is preferred when one's available and the on-screen keyboard is the
 reserve you summon on demand, not something permanently eating screen space
-— **BLE keyboard pairing is done and confirmed working**: a "BLE" status
-button under the KBD toggle shows connection state at a glance and forces a
-fresh pairing scan on tap; see the on-screen-keyboard status note below for
-how automatic pairing/reconnect works.
+— see "How it works" above for how both actually behave.
 
 ### SCREEN modes
 
@@ -146,9 +262,8 @@ do. This device boots into
 `SCREEN 2` (64-col) by default rather than the X4's `SCREEN 1` (48-col) —
 deliberately different: the X4 defaults to 48-col because that reads best at
 its panel size, but this panel has enough room that 64-col is the better
-default here. All four fonts are generated and verified; only `SCREEN 2`'s is
-currently wired into the renderer, since nothing in this bring-up program can
-switch modes at runtime (no BASIC interpreter yet).
+default here. All four fonts are generated, verified, and switchable at
+runtime with the `SCREEN <mode>` command (see "How it works" below).
 
 Every cell above is a non-integer rescale of unscii-16, the case
 `AreaResampledHexFont` already exists to handle (the X4's own 10×20 and
@@ -203,13 +318,23 @@ individually reasonable.
 **Never `pio run -t upload`, and never write to `0x10000`.** That writes
 bootloader.bin + the partition table + otadata + the app — not just the
 app — silently replacing M5Launcher's own bootloader with one this
-project's `platformio.ini` compiles. On this device that is not cosmetic:
-the EPD only draws when running under **M5Launcher's own original
-bootloader** — confirmed by direct A/B, same app code, same serial "success"
-either way, panel dead under a freshly-compiled bootloader and working under
-Launcher's. `0x10000` (`app0`) is also not "whatever's convenient" — it is
-M5Launcher's actual code, the thing that runs on every boot and decides what
-to load next; overwriting it breaks the picker, not just this build.
+project's `platformio.ini` compiles. `0x10000` (`app0`) is also not
+"whatever's convenient" — it is M5Launcher's actual code, the thing that
+runs on every boot and decides what to load next; overwriting it breaks the
+picker, not just this build.
+
+On top of that, **this device currently needs Launcher's app to run at
+least once before this firmware's own EPD writes take visible effect** —
+see the note at the top of this README and `docs/DEVELOPMENT_LOG.md`'s "EPD
+stays dark without Launcher" entry for the investigation. A controlled test
+this session (this firmware as the *only*, correctly-sized app on the
+device, under the *same* bootloader that's already proven to work) still
+came up with a dark panel, which rules the bootloader itself out — so this
+isn't really about protecting "M5Launcher's bootloader" specifically, it's
+about not losing the one thing on this device that's confirmed to wake the
+panel up. Until the real fix lands, **never restore the full-flash backup's
+bootloader+partition-table region without also keeping Launcher's own app
+in `app0`** — that combination is the only currently-known-working state.
 
 The safe recipe: build the app only, then write *just* `firmware.bin` into
 an existing **app-type OTA partition that is not `app0`**, with plain
@@ -222,7 +347,8 @@ esptool.py --chip esp32s3 --port <port> --baud 921600 \
 
 Read the live partition table first (`esptool read_flash 0x8000 0xC00` +
 `gen_esp32part.py`) — offsets change whenever slots are added or removed.
-As of 2026-08-21 the table is:
+Re-verified against the physical device on 2026-08-24 (unchanged since
+2026-08-21, as expected — this table has never actually been reflashed):
 
 ```
 nvs       data  nvs      0x9000    16K
@@ -230,8 +356,8 @@ otadata   data  ota      0xd000     8K
 phy_init  data  phy      0xf000     4K
 app0      app   test     0x10000  1536K   <- M5Launcher, NEVER write here
 coredump  data  coredump 0x190000   64K
-crossp    app   ota_0    0x1a0000 5312K   <- currently holds THIS bring-up
-                                             firmware, not the real reader
+crossp    app   ota_0    0x1a0000 5312K   <- currently holds MicroBASIC,
+                                             not the real reader (CrossPoint)
 ```
 
 `crossp` is where this project's own testing has been landing (CrossPoint's
@@ -246,37 +372,32 @@ Full-flash backups of the dev unit (bootloader + partition table + every
 app, restorable in one `write_flash 0x0 <backup>.bin`) live outside this
 repo at `~/Desktop/M5PaperS3-backup/`, with their own `RESTAURAR.md`.
 
+**`editor/partitions.csv` does not match the table above.** It's used only
+for two build-time things — the app-size ceiling PlatformIO checks against,
+and (if the hard rule above were ever violated) what it would flash — and
+since the real device's table is never touched, nothing keeps the two in
+sync automatically. See `docs/DEVELOPMENT_LOG.md`'s "partitions.csv doesn't
+match the real device" entry for what this already caused.
+
 ## What has to work
 
-1. Text editor with the US-International keyboard layout and dead keys.
+1. **BASIC interpreter and screen editor — done and confirmed on hardware.**
+   TinyBASIC plus the same character-grid screen editor as the X4 (logical
+   lines, wrapping, LIST/RUN/etc.) — see "How it works" above.
+2. **File read/write — done and confirmed on hardware.** `LOAD`/`SAVE`/
+   `CATALOG`/`DELETE` (TinyBASIC's own) against `/MicroBASIC/programs`, plus
+   this project's own `FILES`/`DIR` aliases. `.bas` only for now — no `.txt`,
+   since there's no text editor yet (see item 4).
+3. **WiFi and the file-transfer web server — done and confirmed on
+   hardware.** See "How it works" above.
+4. Text editor with the US-International keyboard layout and dead keys.
    TypeWriter and Clean screen modes are dropped; the standard mode only.
    **Dead-key composition itself is done and confirmed** — `dead_keys.h`
    (self-contained, no editor/BLE/wifi dependencies) is ported and wired into
-   the bring-up's typing demo; the text editor it belongs in
-   (`text_editor.cpp`) is still in `port-staging/`.
-2. BASIC interpreter and screen editor.
-3. File read/write, creating new `.txt` and `.bas` files.
-4. **WiFi and the file-transfer web server — done and confirmed on
-   hardware.** No sync feature (that's the X4/MicroSlate-inherited part this
-   port deliberately skips) — just a network-list-and-password wizard
-   (arrow-key driven, on-screen keyboard forced visible for the whole flow)
-   and a small HTTP server (mDNS name `microbasic-papers3`) serving a
-   drag-and-drop upload/download page against `/MicroBASIC/programs`. Reached
-   by tapping the "SYNC" status button or typing the `SYNC` command. See
-   `docs/DEVELOPMENT_LOG.md`'s "WiFi never actually connected" entry for a
-   real bug this port hit and fixed (an undersized NVS partition blocking the
-   WiFi radio's own calibration write) — worth knowing about if WiFi ever
-   silently stops connecting again after heavy BLE-pairing/WiFi-credential
-   testing in one session.
-5. **Bluetooth keyboard — done and confirmed on hardware.** Starts only when
-   the "BLE" status button is tapped (not automatically at boot — a WiFi
-   attempt made before that button is ever touched needs BLE to genuinely
-   not be running, not just idle, so the two radios' coexistence constraint
-   never comes up unless someone's actually using a BLE keyboard). Auto-pairs
-   with the first HID-advertising device seen (no pairing UI exists yet) once
-   started, and auto-reconnects to the saved bond for the rest of that
-   session; falls back to scanning again if the saved device doesn't answer
-   for a while, or immediately on another tap of the "BLE" button.
+   the terminal's typing path already; the text editor it belongs in
+   (`text_editor.cpp`) is still in `port-staging/`. Next up for v0.5.
+5. **Bluetooth keyboard — done and confirmed on hardware.** See "How it
+   works" above.
 6. **On-screen keyboard — done and confirmed working well on real hardware.**
    Not on the original list, but not optional either: with no physical
    buttons and no keyboard paired, the device is otherwise mute at first

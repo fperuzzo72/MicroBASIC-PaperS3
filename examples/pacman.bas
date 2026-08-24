@@ -1,15 +1,17 @@
 1 REM ------------------------------------------
 2 REM MICROBASIC PACMAN - HARDWARE TEST PROGRAM
-3 REM TYPE  SCREEN 1  BEFORE  RUN
+3 REM TYPE  SCREEN 2  BEFORE  RUN
 4 REM ARROWS TURN, Q QUITS, ESC BREAKS
-5 REM ------------------------------------------
-10 DIM M$(231)
+5 REM GHOST MOVES AT HALF THE PLAYER'S SPEED
+6 REM ------------------------------------------
+10 DIM M$(767)
 20 GOSUB 900
 30 CLS
 40 GOSUB 800
-50 PX=2:PY=10:GX=11:GY=4:GC$="."
-55 AD=0:AE=0:BD=0:BE=0:GD=0:GE=0
+50 PX=3:PY=12:GX=30:GY=2:GC$="."
+55 AD=0:AE=0:BD=0:BE=0:GD=0:GE=0:GTOG=0
 60 SC=0
+65 LOCATE 27,1:PRINT "P A C M A N";
 70 GOSUB 750
 80 GOSUB 700
 90 GOSUB 710
@@ -26,13 +28,16 @@
 200 CX=PX:CY=PY:DX=BD:DY=BE:GOSUB 500
 210 IF OK=1 THEN AD=BD:AE=BE
 220 CX=PX:CY=PY:DX=AD:DY=AE:GOSUB 500
-230 IF OK=0 THEN GOTO 300
-240 LOCATE PX+13,PY+2:PRINT " ";
+230 IF OK=0 THEN GOTO 295
+240 LOCATE PX+2,PY+2:PRINT " ";
 250 PX=NX:PY=NY
 260 IF M$(P,P)="." THEN SC=SC+1:M$(P,P)=" "
 270 GOSUB 700
 280 GOSUB 750
 290 IF SC=TD THEN GOTO 650
+295 REM -- THE GHOST ONLY GETS EVERY OTHER TICK --
+296 GTOG=1-GTOG
+297 IF GTOG=0 THEN GOTO 420
 300 REM ---- GHOST: CHASE, NEVER TURN BACK ----
 305 AX=SGN(PX-GX):AY=SGN(PY-GY)
 310 CX=GX:CY=GY
@@ -56,7 +61,7 @@
 397 REM DEAD END: TURNING BACK IS THE ONLY WAY OUT
 398 DX=-GD:DY=-GE:GOSUB 500
 399 IF OK=0 THEN GOTO 420
-400 LOCATE GX+13,GY+2:PRINT GC$;
+400 LOCATE GX+2,GY+2:PRINT " ";
 405 GX=NX:GY=NY:GC$=M$(P,P):GD=DX:GE=DY
 410 GOSUB 710
 420 IF GX=PX AND GY=PY THEN GOTO 620
@@ -65,7 +70,7 @@
 505 OK=0
 506 IF DX=0 AND DY=0 THEN RETURN
 507 NX=CX+DX:NY=CY+DY
-508 P=(NY-1)*21+NX
+508 P=(NY-1)*59+NX
 509 IF M$(P,P)<>"#" THEN OK=1
 510 RETURN
 520 REM -- SAME, BUT THE GHOST MAY NOT TURN BACK
@@ -73,40 +78,42 @@
 530 IF DX=-GD AND DY=-GE THEN RETURN
 535 GOSUB 500
 540 RETURN
-600 LOCATE 1,14:PRINT "STOPPED. SCORE ";SC;
+600 LOCATE 3,16:PRINT "STOPPED. SCORE ";SC;
 610 END
-620 LOCATE 1,14:PRINT "CAUGHT! SCORE ";SC;
+620 LOCATE 3,16:PRINT "CAUGHT! SCORE ";SC;
 630 END
-650 LOCATE 1,14:PRINT "CLEARED! SCORE ";SC;
+650 LOCATE 3,16:PRINT "CLEARED! SCORE ";SC;
 660 END
-700 LOCATE PX+13,PY+2:PRINT "O";
+700 LOCATE PX+2,PY+2:PRINT "O";
 705 RETURN
-710 LOCATE GX+13,GY+2:PRINT "&";
+710 LOCATE GX+2,GY+2:PRINT "&";
 715 RETURN
-750 LOCATE 14,2:PRINT "SCORE ";SC;" OF ";TD;"  ";
+750 LOCATE 3,2:PRINT "SCORE ";SC;" OF ";TD;"  ";
 760 RETURN
-800 FOR R=1 TO 11
-810 LOCATE 14,R+2
-820 PRINT M$((R-1)*21+1,R*21);
+800 FOR R=1 TO 13
+810 LOCATE 3,R+2
+820 PRINT M$((R-1)*59+1,R*59);
 830 NEXT
 840 RETURN
 900 TD=0
-910 FOR R=1 TO 11
+910 FOR R=1 TO 13
 920 READ A$
-930 M$((R-1)*21+1,R*21)=A$
+930 M$((R-1)*59+1,R*59)=A$
 940 NEXT
-950 FOR I=1 TO 231
+950 FOR I=1 TO 767
 960 IF M$(I,I)="." THEN TD=TD+1
 970 NEXT
 980 RETURN
-990 DATA "#####################"
-991 DATA "#.........#.........#"
-992 DATA "#.###.###.#.###.###.#"
-993 DATA "#...................#"
-994 DATA "#.###.#.#####.#.###.#"
-995 DATA "#.....#...#...#.....#"
-996 DATA "#####.###.#.###.#####"
-997 DATA "#.........#.........#"
-998 DATA "#.###.#########.###.#"
-999 DATA "#...................#"
-1000 DATA "#####################"
+990 DATA "###########################################################"
+991 DATA "#.........................................................#"
+992 DATA "#.####..###..#####..####..........####..#####..###..####..#"
+993 DATA "#.####..###..#####..####..........####..#####..###..####..#"
+994 DATA "#.........................................................#"
+995 DATA "#.####..###..#####.........#####........#####..###..####..#"
+996 DATA "#.......###.........####...#####..####.........###........#"
+997 DATA "#.......###................#####...............###........#"
+998 DATA "#.####..............####..........####..............####..#"
+999 DATA "#.####.......#####..####..........####..#####.......####..#"
+1000 DATA "#............#####......................#####.............#"
+1001 DATA "#.........................................................#"
+1002 DATA "###########################################################"

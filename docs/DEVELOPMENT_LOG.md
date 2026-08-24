@@ -139,31 +139,152 @@ session:
 E (31855) phy_init: store_cal_data_to_nvs_handle: store calibration data failed(0x1105)
 ```
 
-`0x1105` is `ESP_ERR_NVS_NOT_ENOUGH_SPACE`. `editor/partitions.csv` reserves
-only 20KB for `nvs` (`0x9000, 0x5000`) -- kept identical to CrossPoint's own
-partition table on purpose, so their web flasher stays compatible (not
-shared *code* like the areas above, but the same kind of borrowed-scheme
-constraint: don't touch it). That one partition holds BLE bonds, saved WiFi
-credentials, and now the WiFi radio's own calibration blob -- three growing
-consumers sharing one small, fixed-size space. After a session's worth of
-BLE pairing and WiFi credential testing, it filled: scanning (receive-only)
-kept working regardless, but the calibration write specifically failed,
-degrading the stack until actual association stopped completing at all --
-worse on a second re-init within the same session
+`0x1105` is `ESP_ERR_NVS_NOT_ENOUGH_SPACE`. The device's real `nvs`
+partition (confirmed by reading the live table off the device itself --
+see "partitions.csv doesn't match the real device" below, this repo's own
+`editor/partitions.csv` is *not* the ground truth here) is only 16KB
+(`0x9000`, 16K), kept small on purpose to match CrossPoint's own partition
+table so their web flasher stays compatible. That one partition holds BLE
+bonds, saved WiFi credentials, and now the WiFi radio's own calibration
+blob -- three growing consumers sharing one small, fixed-size space. After
+a session's worth of BLE pairing and WiFi credential testing, it filled:
+scanning (receive-only) kept working regardless, but the calibration write
+specifically failed, degrading the stack until actual association stopped
+completing at all -- worse on a second re-init within the same session
 (`wifi_init_default: netstack cb reg failed with 12308`), which is why
 retrying against a different network in the same session didn't help
 either.
 
-Fixed for now by erasing just the NVS region --
-`esptool erase_region 0x9000 0x5000` -- which clears data *inside* the
-existing partition table without touching the table itself, the bootloader,
-or either app slot (same safety boundary as the OTA-slot-only flashing rule
-elsewhere in this repo). That's a one-time reset, not a permanent fix:
-nothing stops the same 20KB from filling up again over normal use, one
-saved network or one new BLE pairing at a time. If it recurs, the real fix
-is enlarging `nvs` in the partition table, which conflicts with the
-match-CrossPoint constraint above and needs a real decision, not a quiet
-change.
+Fixed for now by erasing the NVS region -- `esptool erase_region 0x9000
+0x5000` -- reasoning at the time that this stayed *inside* the existing
+partition table without touching the table itself, the bootloader, or
+either app slot. That reasoning used `editor/partitions.csv`'s declared
+20KB `nvs` size, which turned out to be wrong: the real partition is only
+16KB, so this command actually over-ran the real `nvs` partition by 4KB,
+into the first of `otadata`'s two 4KB sectors (see the entry below -- ESP-IDF
+keeps `otadata` as two redundant sectors specifically so one going bad
+doesn't strand the device, which is almost certainly why this had no visible
+effect: the device kept booting into `crossp` normally on every test since).
+Erasing was still the right instinct, just aimed with the wrong map -- next
+time, read the live table first rather than trusting `partitions.csv`.
+
+That erase is a one-time reset, not a permanent fix: nothing stops the same
+16KB from filling up again over normal use, one saved network or one new
+BLE pairing at a time. If it recurs, the real fix is enlarging `nvs` in the
+partition table, which conflicts with the match-CrossPoint constraint above
+and needs a real decision, not a quiet change.
+
+## partitions.csv doesn't match the real device
+
+`editor/partitions.csv` (referenced by `platformio.ini`'s
+`board_build.partitions`, and the source of the wrong 20KB assumption
+above) describes a partition table that has never actually been on this
+device: 20KB `nvs` at the right offset but the wrong size, `otadata` at a
+different offset, `app0`/`app1` at 6400KB apiece with an `spiffs` partition
+neither the real table nor this project uses, no separate `phy_init`
+partition at all. Reading the live table directly off the device (`esptool
+read_flash 0x8000 0xC00` + `gen_esp32part.py`, both from the README's
+"Flashing" section) on 2026-08-24 confirmed it instead matches the table
+the README already documented from 2026-08-21, unchanged -- exactly what
+you'd expect, since this project's hard rule is to never flash the
+partition table itself.
+
+The one place this silently mattered before now: `platformio.ini`'s
+`board_upload.maximum_size` was set to `6553600` (6400KB), matching
+`partitions.csv`'s `app0`/`app1` size -- not the real `crossp` slot's actual
+5312KB. A build under 5312KB (everything built so far, currently ~1.76MB)
+was never at risk, but PlatformIO's own "Checking size" step would have
+happily approved a firmware between 5312KB and 6400KB as fitting, when
+flashing it into the real, smaller `crossp` slot at `0x1a0000` would have
+written past that slot's actual boundary. Fixed by setting `maximum_size`
+to `5439488` (5312KB) to match the real slot. `partitions.csv` itself is
+left as-is -- correcting its *contents* to describe the real table would
+mean generating and flashing a matching partition-table image, which is
+exactly the operation this project's hard safety rule forbids; it only
+turned out to matter here because one number derived from it (the size
+ceiling) leaked into a place that does matter, and that number is now
+fixed at its source instead.
+
+## EPD stays dark without Launcher
+
+This device's firmware only draws anything when M5Stack's own Launcher
+(the picker menu at `app0`) runs first. Flashed and booted entirely on its
+own -- same bootloader, same app code either way -- the app runs completely
+normally: SD card mounts, WiFi connects, BLE pairs, the whole serial boot
+log looks identical to a working boot. The EPD panel itself just never
+updates, staying on whatever was on screen before (or blank, on a truly
+cold boot). Not a crash, not a hang -- the firmware is alive and well; the
+panel alone doesn't respond.
+
+**First hypothesis, ruled out: the bootloader itself.** The original
+(pre-this-investigation) theory was that a freshly-compiled bootloader was
+somehow different from Launcher's own -- confirmed once, early on, via A/B:
+same app, panel dead under a from-scratch bootloader, working under
+Launcher's. That test conflated two variables at once, though: a different
+bootloader *and* a different first app to run (since replacing the
+bootloader also meant Launcher's own app never ran). This session finally
+separated them with a controlled test: this project's own known-working
+firmware, written as the *only* app on the device (a from-scratch 3-partition
+table -- NVS, otadata, one 3MB `app0`, coredump -- built and verified with
+`gen_esp32part.py`, flashed under the *same* bootloader already proven to
+work), still came up with a dark panel on boot, log identical to every other
+"works over serial, panel stays dark" case. The bootloader is not the
+variable. (Getting to this clean test took two false starts: once, the
+firmware image was simply too large for the undersized real `app0` partition
+--1,762,768 bytes into a 1,572,864-byte slot -- which the bootloader
+correctly rejected outright rather than silently overflowing, an
+inconclusive, self-inflicted result, not a hardware finding.)
+
+**Second hypothesis, confirmed: M5Stack's own `M5GFX`/`M5Unified` libraries
+do something at boot that this project's own from-scratch EPD driver
+doesn't.** Every third-party PaperS3 project found that draws successfully
+without going through M5Stack's own Launcher or UIFlow2 first goes through
+`M5GFX`/`M5Unified` directly (confirmed for
+[bmorcelli/Launcher](https://github.com/bmorcelli/Launcher) itself,
+`gebeto/microreader-paper-s3`, and a Sudoku gist by `palaniraja`) -- none of
+them reimplement the EPD bus from scratch the way this SDK does. Reading
+`M5GFX.cpp`'s own `board_M5PaperS3` autodetect code found the likely
+mechanism: right after identifying the board and before constructing
+`Bus_EPD`/`Panel_EPD`, it electrically fingerprints GPIO41/42 (the touch
+I²C pins: drive both low, then high, then read back as inputs with a
+pulldown -- both must still read HIGH, proof an external pull-up survives
+it), then probes I²C for a GT911 answering at `0x14` or `0x5D`, and only if
+that succeeds does it assert GPIO44 (`PWROFF_PULSE_PIN`) LOW. This project's
+own `BoardConfig.h` had previously assumed (marked PENDING) that no
+boot-time hold/enable pin was needed here, reasoning the board "appears to
+self-latch through its own power-button circuit" -- true for staying
+powered on, apparently not true for the EPD rail specifically.
+
+**Two attempts at porting this into `freeink::m5papers3::prepare()`
+(wired into `LgfxEpdConfig::power.prepare`, called by `LgfxEpdDriver`
+before the EPD bus is touched at all) did not fix it:**
+
+1. Porting *only* the isolated `pinMode(44, output); gpio_lo(44);` line
+   made things **worse** -- a harder, earlier hang with no boot log at all,
+   not even the otherwise-normal "runs fine, panel dark" boot this SDK
+   already reproduced.
+2. Porting the *full* sequence (fingerprint, then a real GT911 probe over
+   `Wire`, then the GPIO44 write gated on finding it) fared differently
+   depending on context: under the *new* single-partition table (no
+   Launcher involved at all), it completed a clean full boot including a
+   successful-looking `displayBuffer()` call -- but the panel still didn't
+   show the correct content, later runs of the same build produced a real
+   brownout at boot, and a version with added `Serial.printf` diagnostics
+   around each stage hung *before Serial output started at all*, hard
+   enough that the only recovery was holding the device into its ROM
+   download-mode strap and reflashing from there (a physical reset, and
+   even a normal power-cycle, did not bring the USB serial port back).
+
+Both attempts were reverted; the device is back on the original 6-partition
+table with Launcher's own bootloader and app0, and this project's firmware
+in `crossp`, the only currently-confirmed-working arrangement. The exact
+missing piece is still open -- plausibly something in `Panel_EPD`/`Bus_EPD`'s
+own internal state that depends on timing or ordering not yet matched, or a
+step elsewhere in `M5GFX::begin()` not yet identified. Whoever picks this up
+next: instrument before guessing again -- the two attempts above show this
+hardware punishes an incomplete port of this sequence more than having none
+of it at all, and the failure modes get *worse*, not better, between
+attempts, which is a warning sign, not noise to iterate past casually.
 
 ## Unconfirmed lead: possible tokenizer string-literal corruption
 

@@ -340,7 +340,7 @@ static void drawStatusBar() {
   const int inset = 2;
   renderer.drawRect(STATUS_TITLE_X + inset, STATUS_TITLE_Y + inset, STATUS_TITLE_W - 2 * inset,
                      STATUS_TITLE_H - 2 * inset, true);
-  const char* title = "FSP MicroBASIC Paper S3 v0.3";
+  const char* title = "FSP MicroBASIC Paper S3 v0.4";
   // Left-aligned, not centered like the buttons -- a title reads as a label
   // for the bar, not another button, so it gets its own left margin instead
   // of floating in the middle of a box that's going to keep shrinking as

@@ -20,7 +20,7 @@ Ou use `VC`, que lista a pasta e carrega o escolhido.
 
 | arquivo | SCREEN | tipo | o que exercita |
 |---|---|---|---|
-| `pacman.bas` | 1 (48 col) | tempo real | `GET`, `LOCATE`, substring como buffer, `@T`, `RND` |
+| `pacman.bas` | 2 (64 col) | tempo real | `GET`, `LOCATE`, substring como buffer, `@T`, `RND` |
 | `invaders.bas` | 2 (64 col) | tempo real | o mesmo, mais construção de string por posição |
 | `lander.bas` | qualquer | por turnos | `INPUT` numérico, aritmética de ponto flutuante |
 | `forca.bas` | qualquer | por turnos | `INPUT` de string, `READ`/`DATA`, `ASC`, substring |

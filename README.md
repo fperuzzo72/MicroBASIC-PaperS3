@@ -127,17 +127,22 @@ how automatic pairing/reconnect works.
 
 | Mode | Columns × Rows | Cell | Scale from unscii-16 |
 |---|---|---|---|
-| `SCREEN 0` | 32×9 | 30×60 | 3.75× |
-| `SCREEN 1` | 48×13 | 20×40 | 2.5× — matches the X4's own default column count |
-| `SCREEN 2` | 64×18 | 15×30 | 1.875× — **boots here** |
-| `SCREEN 3` | 80×22 | 12×24 | 1.5× |
+| `SCREEN 0` | 32×8 | 30×60 | 3.75× |
+| `SCREEN 1` | 48×12 | 20×40 | 2.5× — matches the X4's own default column count |
+| `SCREEN 2` | 64×17 | 15×30 | 1.875× — **boots here** |
+| `SCREEN 3` | 80×21 | 12×24 | 1.5× |
 
 All four column counts from the X4's original scheme carry over unchanged
 (960 = 2⁶×3×5, so every one of 32/48/64/80 divides it exactly — no column
-margin in any mode, unlike the X4's own 800px panel). Only `SCREEN 0` and
-`SCREEN 2` also divide 540 exactly on the row axis (9 and 18 rows, zero
-margin); `SCREEN 1` and `SCREEN 3` get a small centered top/bottom margin (10px
-and 6px) the same way the X4's own non-exact modes do. This device boots into
+margin in any mode, unlike the X4's own 800px panel). Row counts are one
+lower than a straight 540px/cellH division across all four modes: the top
+30px of the panel is reserved for the status bar (KBD/BLE and the
+MENU/EDITOR/SYNC placeholders), so the terminal's own usable band is 510px,
+not 540. `SCREEN 2` divides that exactly (17 rows, zero extra margin) — the
+nicest fit of the four, since the bar's 30px height is itself a multiple of
+its 30px cell height; the other three get a small centered top/bottom
+margin within their 510px band the same way the X4's own non-exact modes
+do. This device boots into
 `SCREEN 2` (64-col) by default rather than the X4's `SCREEN 1` (48-col) —
 deliberately different: the X4 defaults to 48-col because that reads best at
 its panel size, but this panel has enough room that 64-col is the better

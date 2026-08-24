@@ -75,19 +75,51 @@ static constexpr int OSK_Y = PANEL_H - OSK_H;  // 180
 static constexpr int OSK_X = 0;
 static constexpr int OSK_W = PANEL_W;
 
-// Toggle button: top-right, fixed pixel size (not tied to the terminal's
-// current cell size, unlike an earlier draft).
-static constexpr int TOGGLE_W = 90;
-static constexpr int TOGGLE_H = 30;
-static constexpr int TOGGLE_X = PANEL_W - TOGGLE_W;
-static constexpr int TOGGLE_Y = 0;
+// Top status/function bar: the full panel width, reserved space rather than
+// an overlay -- screen_editor.cpp's MODES table accounts for it (one fewer
+// terminal row and a taller marginY in every SCREEN mode; see its own
+// comment), so terminal content never draws underneath it. Buttons are laid
+// out right-to-left, most-used closest to the corner: BLE and KBD are live;
+// SYNC, EDITOR and MENU are reserved slots -- drawn, tap-recognized, but not
+// wired to anything yet, since those systems aren't ported (see the
+// README's "Sibling project" section). STATUS_TITLE_W is computed from the
+// leftmost reserved button's X, so it shrinks on its own as more buttons
+// get added later rather than needing to be recalculated by hand.
+static constexpr int STATUS_BAR_H = 30;
+static constexpr int STATUS_BAR_Y = 0;
+static constexpr int STATUS_BTN_W = 90;
 
-// BLE status/pair button: same corner, stacked directly under the OSK
-// toggle -- same size, same reasoning.
-static constexpr int BLE_TOGGLE_W = TOGGLE_W;
-static constexpr int BLE_TOGGLE_H = TOGGLE_H;
-static constexpr int BLE_TOGGLE_X = TOGGLE_X;
-static constexpr int BLE_TOGGLE_Y = TOGGLE_Y + TOGGLE_H;
+static constexpr int BLE_TOGGLE_W = STATUS_BTN_W;
+static constexpr int BLE_TOGGLE_H = STATUS_BAR_H;
+static constexpr int BLE_TOGGLE_X = PANEL_W - BLE_TOGGLE_W;
+static constexpr int BLE_TOGGLE_Y = STATUS_BAR_Y;
+
+static constexpr int TOGGLE_W = STATUS_BTN_W;
+static constexpr int TOGGLE_H = STATUS_BAR_H;
+static constexpr int TOGGLE_X = BLE_TOGGLE_X - TOGGLE_W;
+static constexpr int TOGGLE_Y = STATUS_BAR_Y;
+
+static constexpr int SYNC_BTN_W = STATUS_BTN_W;
+static constexpr int SYNC_BTN_H = STATUS_BAR_H;
+static constexpr int SYNC_BTN_X = TOGGLE_X - SYNC_BTN_W;
+static constexpr int SYNC_BTN_Y = STATUS_BAR_Y;
+
+static constexpr int EDITOR_BTN_W = STATUS_BTN_W;
+static constexpr int EDITOR_BTN_H = STATUS_BAR_H;
+static constexpr int EDITOR_BTN_X = SYNC_BTN_X - EDITOR_BTN_W;
+static constexpr int EDITOR_BTN_Y = STATUS_BAR_Y;
+
+static constexpr int MENU_BTN_W = STATUS_BTN_W;
+static constexpr int MENU_BTN_H = STATUS_BAR_H;
+static constexpr int MENU_BTN_X = EDITOR_BTN_X - MENU_BTN_W;
+static constexpr int MENU_BTN_Y = STATUS_BAR_Y;
+
+// Everything left of the leftmost reserved button: outlined, holds the
+// boot title until some future button claims part of it.
+static constexpr int STATUS_TITLE_X = 0;
+static constexpr int STATUS_TITLE_Y = STATUS_BAR_Y;
+static constexpr int STATUS_TITLE_W = MENU_BTN_X - STATUS_TITLE_X;
+static constexpr int STATUS_TITLE_H = STATUS_BAR_H;
 
 // `display` is a global owned by the hal (declared extern in HalDisplay.h,
 // defined in HalDisplay.cpp) -- do not shadow it with a local instance.
@@ -232,13 +264,14 @@ static void drawToggleButton() {
   renderer.drawText(FONT_UI, tx, ty, label);
 }
 
-// Status + manual-pair button, stacked under the KBD toggle (see
-// BLE_TOGGLE_* above). Filled solid while a BLE keyboard is connected
-// (matches osk.cpp's own "armed" convention for Shift/Ctrl/Alt), outlined
-// otherwise -- so the connection state is visible at a glance without
-// needing to read anything. Tapping it always fires forceBlePairingNow()
-// (defined near bleKbdAutoPair() below, forward-declared here since this
-// file's touch handling is laid out above its BLE pairing logic).
+// Status + manual-pair button, immediately left of the panel's right edge
+// in the status bar's row (see BLE_TOGGLE_* above). Filled solid while a
+// BLE keyboard is connected (matches osk.cpp's own "armed" convention for
+// Shift/Ctrl/Alt), outlined otherwise -- so the connection state is visible
+// at a glance without needing to read anything. Tapping it always fires
+// forceBlePairingNow() (defined near bleKbdAutoPair() below, forward-
+// declared here since this file's touch handling is laid out above its BLE
+// pairing logic).
 static void forceBlePairingNow();
 
 static void drawBleButton() {
@@ -256,6 +289,44 @@ static void drawBleButton() {
   const int tx = BLE_TOGGLE_X + (BLE_TOGGLE_W - tw) / 2;
   const int ty = BLE_TOGGLE_Y + (BLE_TOGGLE_H - renderer.getLineHeight(FONT_UI)) / 2;
   renderer.drawText(FONT_UI, tx, ty, label, !connected);
+}
+
+// MENU/EDITOR/SYNC: reserved status-bar slots for systems that aren't
+// ported yet (see the README's "Sibling project" section). Drawn outlined,
+// like an unarmed KBD/BLE button, and tap-recognized (handleTouchTap()
+// swallows a tap here rather than letting it fall through) so the space
+// visibly belongs to a future button instead of silently doing nothing.
+static void drawPlaceholderButton(int x, int y, int w, int h, const char* label) {
+  const int inset = 2;
+  renderer.drawRect(x + inset, y + inset, w - 2 * inset, h - 2 * inset, true);
+  const int tw = renderer.getTextWidth(FONT_UI, label);
+  const int tx = x + (w - tw) / 2;
+  const int ty = y + (h - renderer.getLineHeight(FONT_UI)) / 2;
+  renderer.drawText(FONT_UI, tx, ty, label);
+}
+
+// Everything in the status bar: the reserved placeholder buttons, the two
+// live ones, and the outlined title area filling whatever's left of the
+// bar (STATUS_TITLE_W already accounts for how many buttons exist).
+static void drawStatusBar() {
+  drawPlaceholderButton(MENU_BTN_X, MENU_BTN_Y, MENU_BTN_W, MENU_BTN_H, "MENU");
+  drawPlaceholderButton(EDITOR_BTN_X, EDITOR_BTN_Y, EDITOR_BTN_W, EDITOR_BTN_H, "EDITOR");
+  drawPlaceholderButton(SYNC_BTN_X, SYNC_BTN_Y, SYNC_BTN_W, SYNC_BTN_H, "SYNC");
+  drawToggleButton();
+  drawBleButton();
+
+  const int inset = 2;
+  renderer.drawRect(STATUS_TITLE_X + inset, STATUS_TITLE_Y + inset, STATUS_TITLE_W - 2 * inset,
+                     STATUS_TITLE_H - 2 * inset, true);
+  const char* title = "FSP MicroBASIC Paper S3 v0.3";
+  // Left-aligned, not centered like the buttons -- a title reads as a label
+  // for the bar, not another button, so it gets its own left margin instead
+  // of floating in the middle of a box that's going to keep shrinking as
+  // more buttons claim the space to its right.
+  constexpr int kTitleLeftMargin = 8;
+  const int tx = STATUS_TITLE_X + inset + kTitleLeftMargin;
+  const int ty = STATUS_TITLE_Y + (STATUS_TITLE_H - renderer.getLineHeight(FONT_UI)) / 2;
+  renderer.drawText(FONT_UI, tx, ty, title);
 }
 
 static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
@@ -278,6 +349,11 @@ static bool handleTouchTap(int lx, int ly) {
     forceBlePairingNow();
     return true;
   }
+  if (tapInRect(lx, ly, MENU_BTN_X, MENU_BTN_Y, MENU_BTN_W, MENU_BTN_H) ||
+      tapInRect(lx, ly, EDITOR_BTN_X, EDITOR_BTN_Y, EDITOR_BTN_W, EDITOR_BTN_H) ||
+      tapInRect(lx, ly, SYNC_BTN_X, SYNC_BTN_Y, SYNC_BTN_W, SYNC_BTN_H)) {
+    return false;  // reserved slot, not wired to anything yet
+  }
   if (g_oskVisible) {
     // oskHandleTap() bounds-checks against the region passed to oskInit()
     // and returns false outside it; gated on g_oskVisible too so a tap over
@@ -296,8 +372,7 @@ static bool handleTouchTap(int lx, int ly) {
 static void drawScreen() {
   renderer.clearScreen();
   drawTerminalContent();
-  drawToggleButton();
-  drawBleButton();
+  drawStatusBar();
   if (g_oskVisible) oskDraw();
 
   Serial.printf("[paint] displayBuffer(%s) ...\n", firstPaintDone ? "FAST" : "FULL");

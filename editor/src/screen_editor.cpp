@@ -19,14 +19,19 @@ struct ScreenModeInfo {
   int cols, rows, cellW, cellH, marginY, fontId;
 };
 
-// SCREEN 0 and 2 divide 540 exactly (9 and 18 rows, 0 margin); SCREEN 1 and
-// 3 get a small centered top/bottom margin (10px and 6px) the same way the
+// The top 30px of the 540px panel is reserved for main.cpp's status bar
+// (KBD/BLE and the MENU/EDITOR/SYNC placeholders -- see its own STATUS_BAR_H),
+// not drawn over, so every mode's usable band is 510px, not 540: marginY
+// below is `30 + centering`, not just `centering`. SCREEN 2 divides 510
+// exactly (17 rows, 0 extra margin) -- happens to be the nicest fit of the
+// four since 30 (the bar) is itself a multiple of its own 30px cell height.
+// The other three each get a small extra top/bottom margin the same way the
 // X4's own non-exact modes do. See README's "SCREEN modes" table.
 static const ScreenModeInfo MODES[4] = {
-    {32, 9, 30, 60, 0, FONT_SCREEN_MONO_0},
-    {48, 13, 20, 40, 10, FONT_SCREEN_MONO_1},
-    {64, 18, 15, 30, 0, FONT_SCREEN_MONO_2},
-    {80, 22, 12, 24, 6, FONT_SCREEN_MONO_3},
+    {32, 8, 30, 60, 45, FONT_SCREEN_MONO_0},
+    {48, 12, 20, 40, 45, FONT_SCREEN_MONO_1},
+    {64, 17, 15, 30, 30, FONT_SCREEN_MONO_2},
+    {80, 21, 12, 24, 33, FONT_SCREEN_MONO_3},
 };
 
 static int currentMode = 2;  // SCREEN 2 (64-col) default on this panel -- see README

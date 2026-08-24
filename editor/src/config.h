@@ -52,6 +52,13 @@ static constexpr int MAX_PROGRAM_LINE_LEN = 160;
 
 static constexpr int MAX_FILENAME_LEN = 64;
 
+// Reject a browser upload (wifi_sync.cpp) bigger than this -- matches the
+// X4's own PROGRAM_UPLOAD_MAX_SIZE. Programs aren't bounded by any editor
+// buffer the way notes are (no prose editor is ported here), just by the
+// interpreter's own memory, but an unbounded upload is still a bad idea on
+// a device this size.
+static constexpr size_t PROGRAM_UPLOAD_MAX_SIZE = 16384;
+
 // --- HID Keycodes ---
 static constexpr uint8_t HID_KEY_A          = 0x04;
 static constexpr uint8_t HID_KEY_C          = 0x06;

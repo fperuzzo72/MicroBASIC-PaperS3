@@ -41,6 +41,7 @@
 #include "osk.h"
 #include "screen_editor.h"
 #include "tb_bridge.h"
+#include "wifi_sync.h"
 #include <BleKeyboardHost.h>
 #include <UsbHidKeyboardHost.h>
 
@@ -305,13 +306,34 @@ static void drawPlaceholderButton(int x, int y, int w, int h, const char* label)
   renderer.drawText(FONT_UI, tx, ty, label);
 }
 
-// Everything in the status bar: the reserved placeholder buttons, the two
+// SYNC: filled while the WiFi setup screen is up (matches BLE's own
+// "armed" convention), outlined otherwise. Tapping it while active is a
+// no-op (wifiSyncStart() already guards on isWifiSyncActive()) -- Escape,
+// reachable from every state syncHandleKey() has, is the way out.
+static void drawSyncButton() {
+  const int inset = 2;
+  const bool active = isWifiSyncActive();
+  if (active) {
+    renderer.fillRect(SYNC_BTN_X + inset, SYNC_BTN_Y + inset, SYNC_BTN_W - 2 * inset,
+                       SYNC_BTN_H - 2 * inset, true);
+  } else {
+    renderer.drawRect(SYNC_BTN_X + inset, SYNC_BTN_Y + inset, SYNC_BTN_W - 2 * inset,
+                       SYNC_BTN_H - 2 * inset, true);
+  }
+  const char* label = "SYNC";
+  const int tw = renderer.getTextWidth(FONT_UI, label);
+  const int tx = SYNC_BTN_X + (SYNC_BTN_W - tw) / 2;
+  const int ty = SYNC_BTN_Y + (SYNC_BTN_H - renderer.getLineHeight(FONT_UI)) / 2;
+  renderer.drawText(FONT_UI, tx, ty, label, !active);
+}
+
+// Everything in the status bar: the reserved placeholder buttons, the
 // live ones, and the outlined title area filling whatever's left of the
 // bar (STATUS_TITLE_W already accounts for how many buttons exist).
 static void drawStatusBar() {
   drawPlaceholderButton(MENU_BTN_X, MENU_BTN_Y, MENU_BTN_W, MENU_BTN_H, "MENU");
   drawPlaceholderButton(EDITOR_BTN_X, EDITOR_BTN_Y, EDITOR_BTN_W, EDITOR_BTN_H, "EDITOR");
-  drawPlaceholderButton(SYNC_BTN_X, SYNC_BTN_Y, SYNC_BTN_W, SYNC_BTN_H, "SYNC");
+  drawSyncButton();
   drawToggleButton();
   drawBleButton();
 
@@ -329,8 +351,126 @@ static void drawStatusBar() {
   renderer.drawText(FONT_UI, tx, ty, title);
 }
 
+// WiFi setup screen: the band between the status bar and the on-screen
+// keyboard (forced visible for the whole session -- see the SYNC tap
+// handler above). Network selection is an inverted highlight bar moved by
+// Up/Down -- reachable from a physical/BLE keyboard's arrow keys or the
+// on-screen keyboard's, with no per-row touch targets to hit-test, per the
+// design discussion this was built from. Password characters are shown as
+// dots, matching how every other WiFi password entry UI does it.
+static constexpr int WIFI_UI_X = 0;
+static constexpr int WIFI_UI_Y = STATUS_BAR_Y + STATUS_BAR_H;
+static constexpr int WIFI_UI_W = PANEL_W;
+static constexpr int WIFI_UI_H = OSK_Y - WIFI_UI_Y;
+
+static void drawWifiCentered(const char* line1, const char* line2 = nullptr) {
+  const int lh = renderer.getLineHeight(FONT_UI);
+  const int ty1 = WIFI_UI_Y + WIFI_UI_H / 2 - (line2 ? lh : lh / 2);
+  const int tw1 = renderer.getTextWidth(FONT_UI, line1);
+  renderer.drawText(FONT_UI, WIFI_UI_X + (WIFI_UI_W - tw1) / 2, ty1, line1);
+  if (line2) {
+    const int tw2 = renderer.getTextWidth(FONT_UI, line2);
+    renderer.drawText(FONT_UI, WIFI_UI_X + (WIFI_UI_W - tw2) / 2, ty1 + lh, line2);
+  }
+}
+
+static void drawNetworkList() {
+  const int rowH = renderer.getLineHeight(FONT_SMALL) + 4;
+  const int visibleRows = WIFI_UI_H / rowH;
+  const int count = getNetworkCount();
+  const int sel = getSelectedNetwork();
+
+  if (count == 0) {
+    const char* msg = getSyncStatusText();
+    drawWifiCentered(msg[0] ? msg : "No networks found", "Esc to cancel");
+    return;
+  }
+
+  // Keep the selection inside the visible window, scrolling the minimum
+  // amount needed rather than always centering it.
+  static int scrollTop = 0;
+  if (sel < scrollTop) scrollTop = sel;
+  if (sel >= scrollTop + visibleRows) scrollTop = sel - visibleRows + 1;
+  if (scrollTop > count - visibleRows) scrollTop = count > visibleRows ? count - visibleRows : 0;
+  if (scrollTop < 0) scrollTop = 0;
+
+  for (int row = 0; row < visibleRows && scrollTop + row < count; row++) {
+    const int i = scrollTop + row;
+    const int y = WIFI_UI_Y + row * rowH;
+    const bool selected = (i == sel);
+    if (selected) renderer.fillRect(WIFI_UI_X, y, WIFI_UI_W, rowH, true);
+
+    char line[80];
+    snprintf(line, sizeof(line), "%s%s%s", isNetworkSaved(i) ? "[saved] " : "",
+             getNetworkSSID(i), isNetworkEncrypted(i) ? "  (locked)" : "");
+    const int ty = y + (rowH - renderer.getLineHeight(FONT_SMALL)) / 2;
+    renderer.drawText(FONT_SMALL, 8, ty, line, !selected);
+  }
+}
+
+static void drawPasswordEntry() {
+  char header[48];
+  snprintf(header, sizeof(header), "Password for %s:", getNetworkSSID(getSelectedNetwork()));
+  const int lh = renderer.getLineHeight(FONT_UI);
+  renderer.drawText(FONT_UI, 8, WIFI_UI_Y + 8, header);
+
+  char dots[MAX_FILENAME_LEN];
+  const int n = getPasswordLen();
+  const int shown = n < (int)sizeof(dots) - 1 ? n : (int)sizeof(dots) - 1;
+  for (int i = 0; i < shown; i++) dots[i] = '*';
+  dots[shown] = '\0';
+  renderer.drawText(FONT_UI, 8, WIFI_UI_Y + 8 + lh + 8, dots[0] ? dots : "(type on the keyboard below)");
+}
+
+static void drawWifiUi() {
+  switch (getSyncState()) {
+    case SyncState::SCANNING:
+      drawWifiCentered("Scanning for networks...");
+      break;
+    case SyncState::NETWORK_LIST:
+      drawNetworkList();
+      break;
+    case SyncState::PASSWORD_ENTRY:
+      drawPasswordEntry();
+      break;
+    case SyncState::CONNECTING:
+      drawWifiCentered(getSyncStatusText(), "Esc to cancel");
+      break;
+    case SyncState::SYNCING: {
+      char line2[64];
+      snprintf(line2, sizeof(line2), "Sent: %d  Received: %d  %s", getSyncFilesSent(),
+               getSyncFilesReceived(), isPcConnected() ? "(connected)" : "");
+      drawWifiCentered(getSyncStatusText(), line2);
+      break;
+    }
+    case SyncState::DONE:
+      drawWifiCentered(getSyncStatusText(), "Returning...");
+      break;
+    case SyncState::CONNECT_FAILED:
+      drawWifiCentered(getSyncStatusText(), "Enter to retry, Esc to cancel");
+      break;
+    case SyncState::SAVE_PROMPT:
+      drawWifiCentered("Save this password?", "Up = Yes    Down = No");
+      break;
+    case SyncState::FORGET_PROMPT:
+      drawWifiCentered("Forget the saved password?", "Up = Yes    Down = No");
+      break;
+  }
+}
+
 static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
   return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+}
+
+// Declared in input_handler.h -- see its doc comment.
+void startWifiSyncFromCommand() {
+  if (isWifiSyncActive()) return;
+  // The wizard's network list uses the top band (see drawWifiUi()) and its
+  // password entry needs a keyboard -- shown for the whole session, not just
+  // while typing, so there's one consistent layout throughout rather than
+  // the screen jumping when password entry starts.
+  g_oskVisible = true;
+  wifiSyncStart();
 }
 
 // Routes one already-logical-coordinate tap to the toggle button or the
@@ -349,9 +489,12 @@ static bool handleTouchTap(int lx, int ly) {
     forceBlePairingNow();
     return true;
   }
+  if (tapInRect(lx, ly, SYNC_BTN_X, SYNC_BTN_Y, SYNC_BTN_W, SYNC_BTN_H)) {
+    startWifiSyncFromCommand();
+    return true;
+  }
   if (tapInRect(lx, ly, MENU_BTN_X, MENU_BTN_Y, MENU_BTN_W, MENU_BTN_H) ||
-      tapInRect(lx, ly, EDITOR_BTN_X, EDITOR_BTN_Y, EDITOR_BTN_W, EDITOR_BTN_H) ||
-      tapInRect(lx, ly, SYNC_BTN_X, SYNC_BTN_Y, SYNC_BTN_W, SYNC_BTN_H)) {
+      tapInRect(lx, ly, EDITOR_BTN_X, EDITOR_BTN_Y, EDITOR_BTN_W, EDITOR_BTN_H)) {
     return false;  // reserved slot, not wired to anything yet
   }
   if (g_oskVisible) {
@@ -371,7 +514,11 @@ static bool handleTouchTap(int lx, int ly) {
 
 static void drawScreen() {
   renderer.clearScreen();
-  drawTerminalContent();
+  if (isWifiSyncActive()) {
+    drawWifiUi();
+  } else {
+    drawTerminalContent();
+  }
   drawStatusBar();
   if (g_oskVisible) oskDraw();
 
@@ -532,6 +679,18 @@ static void bleKbdAutoPair() {
 // keyboard on demand without waiting for the current one to time out, and
 // gives an immediate, visible response to the tap.
 static void forceBlePairingNow() {
+  // First tap ever (or first since the WiFi flow suspended it): BLE isn't
+  // running yet, so there's nothing to disconnect or rescan -- just bring
+  // the stack up. loadBonds() inside begin() means a previously-paired
+  // keyboard still reconnects automatically once bleKbdAutoPair() (now
+  // running, since isRunning() is true from here on) sees it.
+  if (!BleHid.isRunning()) {
+    BleHid.begin("MicroBASIC-PaperS3");
+    g_bleIdleSinceMs = 0;
+    g_bleNextScanAt = 0;
+    g_bleScanArmed = false;
+    return;
+  }
   if (BleHid.isConnected()) BleHid.disconnect();
   g_bleIdleSinceMs = 1;  // nonzero and already older than kBleBondedRetryGraceMs
   g_bleNextScanAt = 0;
@@ -610,11 +769,12 @@ STEP("UsbKbd.begin");
   UsbKbd.begin();
 
 STEP("BleHid.begin");
-  // Loads any previously-bonded keyboard from NVS -- if one exists, poll()
-  // (called every loop() below) starts trying to reconnect to it
-  // automatically. If none exists yet, bleKbdAutoPair() (also called from
-  // loop()) drives first-time scan-and-connect.
-  BleHid.begin("MicroBASIC-PaperS3");
+  // Deliberately NOT started here. BLE now stays off until the BLE button is
+  // tapped (forceBlePairingNow() calls BleHid.begin() then) -- starting it
+  // unconditionally at boot meant it was also live (and scanning/reconnecting
+  // to a bonded keyboard) during every WiFi attempt, which is exactly the
+  // variable the WiFi-connect-failure investigation needs to rule out. See
+  // docs/DEVELOPMENT_LOG.md.
 
 STEP("screenEditorSetMode");
   screenEditorSetMode(2);  // SCREEN 2 (64-col), this panel's default -- see README
@@ -644,7 +804,11 @@ void loop() {
     printDiagnostics("beat");
   }
 
-  bleKbdAutoPair();
+  // Only drives scanning/reconnecting once BLE has actually been started
+  // (see setup()'s BleHid.begin() comment) -- a no-op the whole time nobody
+  // has tapped the BLE button yet.
+  if (BleHid.isRunning()) bleKbdAutoPair();
+  wifiSyncLoop();  // no-op unless the WiFi setup screen is active
 
   // Runs any autoexec.bas basicSetup() found at startup. Deliberately here,
   // not in setup() -- see tb_bridge.h's own comment: a launcher-style
@@ -703,7 +867,18 @@ void loop() {
     if (handleTouchTap(lx, ly)) screenDirty = true;
   }
 
-  processAllInput();
+  // While the WiFi setup screen is up, every key goes to syncHandleKey()
+  // instead of the screen editor -- same underlying queue, different
+  // dispatch (see dequeueKeyEventForCaller()'s own comment).
+  if (isWifiSyncActive()) {
+    uint8_t wCode, wMods;
+    bool wPressed;
+    while (dequeueKeyEventForCaller(wCode, wMods, wPressed)) {
+      if (wPressed) syncHandleKey(wCode, wMods);
+    }
+  } else {
+    processAllInput();
+  }
 
   if (screenDirty) {
     drawScreen();

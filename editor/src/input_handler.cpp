@@ -132,6 +132,13 @@ static void executeLogicalLine(const char* line) {
   // TODO(vc_browser): VC opens the full-screen program picker on the X4 --
   // vc_browser.h isn't ported yet.
 
+  if (isWord("SYNC")) {
+    // Same entry point as tapping the status bar's SYNC button -- lets
+    // someone start the WiFi transfer flow without touching the screen.
+    screenEditorStartNewInputLine();
+    startWifiSyncFromCommand();
+    return;
+  }
   if (isWord("FILES") || isWord("DIR")) {
     // Aliases: the interpreter calls its directory listing CATALOG. FILES is
     // this project's own name, DIR the one anyone from CP/M or DOS reaches
@@ -331,4 +338,13 @@ int processAllInput() {
     processedCount++;
   }
   return processedCount;
+}
+
+bool dequeueKeyEventForCaller(uint8_t& keyCode, uint8_t& modifiers, bool& pressed) {
+  if (isQueueEmpty()) return false;
+  KeyEvent event = dequeueKeyEvent();
+  keyCode = event.keyCode;
+  modifiers = event.modifiers;
+  pressed = event.pressed;
+  return true;
 }

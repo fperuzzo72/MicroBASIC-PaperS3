@@ -120,6 +120,51 @@ physical row it happens to be sitting on. Reuses the function that already
 walks the continuation chain both ways, so it holds for a two-row wrap or a
 five-row one without any extra casework.
 
+## WiFi never actually connected: NVS too small for PHY calibration
+
+Every `WiFi.begin()` reached the driver correctly (`[wifi] connecting to
+...` logged fine) but never got past `WL_DISCONNECTED`, across every network
+tried -- the home AP and, separately, a phone hotspot -- with the password
+confirmed correct via a temporary serial dump of what was actually typed.
+It looked at first like the ESP32-S3 WiFi/BLE coexistence errata already
+worked around in `wifi_sync.cpp` (`suspendBleForWifiConnect()` /
+`resumeBleAfterWifiConnect()`, still worth keeping -- see that comment), but
+it kept failing even in a test where BLE had never been started at all,
+which ruled that out as the primary cause.
+
+The real error was sitting at boot, on the very first WiFi scan of the
+session:
+
+```
+E (31855) phy_init: store_cal_data_to_nvs_handle: store calibration data failed(0x1105)
+```
+
+`0x1105` is `ESP_ERR_NVS_NOT_ENOUGH_SPACE`. `editor/partitions.csv` reserves
+only 20KB for `nvs` (`0x9000, 0x5000`) -- kept identical to CrossPoint's own
+partition table on purpose, so their web flasher stays compatible (not
+shared *code* like the areas above, but the same kind of borrowed-scheme
+constraint: don't touch it). That one partition holds BLE bonds, saved WiFi
+credentials, and now the WiFi radio's own calibration blob -- three growing
+consumers sharing one small, fixed-size space. After a session's worth of
+BLE pairing and WiFi credential testing, it filled: scanning (receive-only)
+kept working regardless, but the calibration write specifically failed,
+degrading the stack until actual association stopped completing at all --
+worse on a second re-init within the same session
+(`wifi_init_default: netstack cb reg failed with 12308`), which is why
+retrying against a different network in the same session didn't help
+either.
+
+Fixed for now by erasing just the NVS region --
+`esptool erase_region 0x9000 0x5000` -- which clears data *inside* the
+existing partition table without touching the table itself, the bootloader,
+or either app slot (same safety boundary as the OTA-slot-only flashing rule
+elsewhere in this repo). That's a one-time reset, not a permanent fix:
+nothing stops the same 20KB from filling up again over normal use, one
+saved network or one new BLE pairing at a time. If it recurs, the real fix
+is enlarging `nvs` in the partition table, which conflicts with the
+match-CrossPoint constraint above and needs a real decision, not a quiet
+change.
+
 ## Unconfirmed lead: possible tokenizer string-literal corruption
 
 Seen once, not yet reproduced: a program typed as

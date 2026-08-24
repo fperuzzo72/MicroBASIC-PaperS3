@@ -21,6 +21,25 @@ void enqueueKeyEvent(uint8_t keyCode, uint8_t modifiers, bool pressed);
 int processAllInput();
 char hidToAscii(uint8_t hid, uint8_t modifiers);
 
+// Pops one already-queued key event for a caller that wants to route it
+// somewhere other than the screen editor -- main.cpp uses this to hand
+// input to wifi_sync.cpp's syncHandleKey() instead of processAllInput()
+// while the WiFi setup screen is up, without wifi_sync.cpp or this header
+// needing to know about each other. Unlike processAllInput() (which only
+// acts on press events), this hands back every event including releases,
+// since what "not pressed" means is the caller's call, not this queue's.
+// Returns false once the queue is empty.
+bool dequeueKeyEventForCaller(uint8_t& keyCode, uint8_t& modifiers, bool& pressed);
+
+// Starts the WiFi file-transfer flow, the same way tapping the status bar's
+// SYNC button does (forcing the on-screen keyboard visible first, so a
+// physical/BLE-only typist isn't stranded if BLE gets suspended mid-connect
+// -- see wifi_sync.cpp's suspendBleForWifiConnect()). Implemented in
+// main.cpp, which owns the on-screen-keyboard-visible flag; called from
+// input_handler.cpp's executeLogicalLine() so typing SYNC reaches the same
+// entry point as the button. A no-op if the flow is already running.
+void startWifiSyncFromCommand();
+
 // Drains the whole input queue looking for a pending break request --
 // Escape or Ctrl+C -- discarding everything else along the way. Read by the
 // runtime's checkch() (tb_runtime.cpp), which the interpreter polls after

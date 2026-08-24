@@ -256,12 +256,27 @@ repo at `~/Desktop/M5PaperS3-backup/`, with their own `RESTAURAR.md`.
    (`text_editor.cpp`) is still in `port-staging/`.
 2. BASIC interpreter and screen editor.
 3. File read/write, creating new `.txt` and `.bas` files.
-4. WiFi and the file-transfer web server.
-5. **Bluetooth keyboard — done and confirmed on hardware.** Auto-pairs with
-   the first HID-advertising device seen (no pairing UI exists yet) and
-   auto-reconnects to the saved bond on every boot; falls back to scanning
-   again if the saved device doesn't answer for a while, or immediately on a
-   tap of the "BLE" status button.
+4. **WiFi and the file-transfer web server — done and confirmed on
+   hardware.** No sync feature (that's the X4/MicroSlate-inherited part this
+   port deliberately skips) — just a network-list-and-password wizard
+   (arrow-key driven, on-screen keyboard forced visible for the whole flow)
+   and a small HTTP server (mDNS name `microbasic-papers3`) serving a
+   drag-and-drop upload/download page against `/MicroBASIC/programs`. Reached
+   by tapping the "SYNC" status button or typing the `SYNC` command. See
+   `docs/DEVELOPMENT_LOG.md`'s "WiFi never actually connected" entry for a
+   real bug this port hit and fixed (an undersized NVS partition blocking the
+   WiFi radio's own calibration write) — worth knowing about if WiFi ever
+   silently stops connecting again after heavy BLE-pairing/WiFi-credential
+   testing in one session.
+5. **Bluetooth keyboard — done and confirmed on hardware.** Starts only when
+   the "BLE" status button is tapped (not automatically at boot — a WiFi
+   attempt made before that button is ever touched needs BLE to genuinely
+   not be running, not just idle, so the two radios' coexistence constraint
+   never comes up unless someone's actually using a BLE keyboard). Auto-pairs
+   with the first HID-advertising device seen (no pairing UI exists yet) once
+   started, and auto-reconnects to the saved bond for the rest of that
+   session; falls back to scanning again if the saved device doesn't answer
+   for a while, or immediately on another tap of the "BLE" button.
 6. **On-screen keyboard — done and confirmed working well on real hardware.**
    Not on the original list, but not optional either: with no physical
    buttons and no keyboard paired, the device is otherwise mute at first

@@ -84,6 +84,22 @@ exposto à linguagem. Pelo mesmo motivo o lançador não pode chamar o `VC` nem
 o `SCREEN` — os dois são comandos do firmware, interceptados antes do
 interpretador, e só existem digitados no prompt.
 
+## O limite de 511 caracteres por string
+
+`DIM A$(512)` ou mais dá **Range error**, mesmo com memória de sobra. O teto
+é `SPIRAMSBSIZE - 1` (`hardware.h`), o tamanho do buffer que o interpretador
+usaria se as strings vivessem em RAM serial. Esta build não usa esse modo
+(`SPIRAMSIMULATOR` está `#undef`, então os buffers nem existem), mas a
+verificação no `DIM` não está condicionada a isso e vale assim mesmo.
+
+Isso importa para qualquer programa que queira um buffer do tamanho da tela:
+SCREEN 3 inteiro seria 80×21 = 1680 caracteres, muito acima do limite. O
+`pacman.bas` esbarrou nisso — o labirinto foi dimensionado em 39×13 = 507
+justamente para caber. A alternativa seria aumentar `SPIRAMSBSIZE` (custaria
+zero bytes aqui, já que os buffers não são alocados), mas mexer na
+configuração do interpretador foi descartado de propósito: respeitar o
+limite da máquina é mais fiel ao exercício.
+
 ## Detecção de resolução
 
 Nenhum programa consegue perguntar ao sistema em que `SCREEN` está. O

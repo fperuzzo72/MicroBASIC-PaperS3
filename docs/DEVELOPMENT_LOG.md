@@ -119,3 +119,39 @@ Descend from the end of the *logical* line the cursor is within, not the
 physical row it happens to be sitting on. Reuses the function that already
 walks the continuation chain both ways, so it holds for a two-row wrap or a
 five-row one without any extra casework.
+
+## Unconfirmed lead: possible tokenizer string-literal corruption
+
+Seen once, not yet reproduced: a program typed as
+
+```
+10 PRINT "Teste de salvamento de programa"
+20 PRINT "Deu certo!"
+```
+
+came back from `LOAD` (after `SAVE`) with garbage appended to line 20 --
+specifically a fragment of line 10's own string, **uppercased and with
+spaces removed**: `20 PRINT "Deu certo!"LVAMENTODEPROGRAMA""`.
+
+`LOAD` only reads back what `SAVE` wrote, and `SAVE` only writes back
+whatever was already in the interpreter's program memory from the moment
+Enter was pressed on line 20 -- so this isn't a file I/O bug, and the
+"uppercase, no spaces" shape doesn't match anything the screen editor does
+(it never touches letter case). It *does* match `basic.c`'s own
+identifier/keyword lexer (around line 3332, `basic.c`): it scans a run of
+`[a-zA-Z_@]` characters and uppercases each one **in place in the input
+buffer** as it goes, character by character -- which is exactly "letters
+survive, case flips, whitespace breaks the run" behavior. That lexer is
+only supposed to run *outside* string literals; if its quote-tracking ever
+loses sync (treating the tail of an unrelated earlier string as if it were
+outside quotes on a later pass), the content it mangles would look exactly
+like this.
+
+Not reproduced since (a clean retype-and-resave loaded correctly), and
+too deep in the vendored upstream tokenizer to chase blind without a live
+repro. If it recurs: `LIST` *before* `SAVE` on the affected line, plus the
+exact edit history that produced it, is what turns this into something
+fixable. Worth checking for on the X4 side too if this ever gets confirmed
+here -- both projects vendor the same upstream `basic.c` under their own
+`patches/tinybasic/`, so a real tokenizer bug would very likely reproduce
+on the X4 as well, not just this port.

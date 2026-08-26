@@ -41,6 +41,7 @@
 #include "osk.h"
 #include "screen_editor.h"
 #include "tb_bridge.h"
+#include "ota_apps.h"
 #include "wifi_sync.h"
 #include <BleKeyboardHost.h>
 #include <UsbHidKeyboardHost.h>
@@ -80,47 +81,43 @@ static constexpr int OSK_W = PANEL_W;
 // an overlay -- screen_editor.cpp's MODES table accounts for it (one fewer
 // terminal row and a taller marginY in every SCREEN mode; see its own
 // comment), so terminal content never draws underneath it. Buttons are laid
-// out right-to-left, most-used closest to the corner: BLE and KBD are live;
-// SYNC, EDITOR and MENU are reserved slots -- drawn, tap-recognized, but not
-// wired to anything yet, since those systems aren't ported (see the
-// README's "Sibling project" section). STATUS_TITLE_W is computed from the
-// leftmost reserved button's X, so it shrinks on its own as more buttons
-// get added later rather than needing to be recalculated by hand.
+// out right-to-left, most-used closest to the corner: BLE, KBD, SYNC and
+// READER are live; EDITOR is a reserved slot -- drawn, tap-recognized, but not
+// wired to anything yet, since the prose editor isn't ported (see the README's
+// "Sibling project" section). The title block takes whatever is left, so it
+// shrinks on its own as buttons are added rather than needing to be
+// recalculated by hand -- see layoutStatusBar().
 static constexpr int STATUS_BAR_H = 30;
 static constexpr int STATUS_BAR_Y = 0;
+// The width the short-labelled buttons have always had, and the reference for
+// everything else in the bar: SYNC/KBD/BLE keep it exactly.
 static constexpr int STATUS_BTN_W = 90;
 
-static constexpr int BLE_TOGGLE_W = STATUS_BTN_W;
-static constexpr int BLE_TOGGLE_H = STATUS_BAR_H;
-static constexpr int BLE_TOGGLE_X = PANEL_W - BLE_TOGGLE_W;
-static constexpr int BLE_TOGGLE_Y = STATUS_BAR_Y;
+// Buttons are sized at boot, not at compile time, because two of the labels
+// stopped fitting. READER and EDITOR are six letters where SYNC is four, so at
+// a fixed 90px their text ran nearly into the border while SYNC sat in
+// comfortable space -- same rectangle, visibly different padding, which is
+// what made the pair look cramped on the panel. Now every button gets the
+// SAME internal padding, taken from what SYNC has at 90px, and the ones with
+// longer labels simply come out wider. That also means a future button, or a
+// relabelled one, lays itself out instead of needing a new magic number.
+//
+// Laid out right to left and flush, no gaps: adjacent boxes end up 4px apart
+// (each draws inset by 2), which is the spacing the right-hand three have
+// always had. The title block is flush with the leftmost button for the same
+// reason, so every seam in the bar matches.
+static int g_bleX = PANEL_W - STATUS_BTN_W, g_bleW = STATUS_BTN_W;
+static int g_kbdX = 0, g_kbdW = STATUS_BTN_W;
+static int g_syncX = 0, g_syncW = STATUS_BTN_W;
+static int g_editorX = 0, g_editorW = STATUS_BTN_W;
+static int g_readerX = 0, g_readerW = STATUS_BTN_W;
+static int g_titleW = 0;
 
-static constexpr int TOGGLE_W = STATUS_BTN_W;
-static constexpr int TOGGLE_H = STATUS_BAR_H;
-static constexpr int TOGGLE_X = BLE_TOGGLE_X - TOGGLE_W;
-static constexpr int TOGGLE_Y = STATUS_BAR_Y;
-
-static constexpr int SYNC_BTN_W = STATUS_BTN_W;
-static constexpr int SYNC_BTN_H = STATUS_BAR_H;
-static constexpr int SYNC_BTN_X = TOGGLE_X - SYNC_BTN_W;
-static constexpr int SYNC_BTN_Y = STATUS_BAR_Y;
-
-static constexpr int EDITOR_BTN_W = STATUS_BTN_W;
-static constexpr int EDITOR_BTN_H = STATUS_BAR_H;
-static constexpr int EDITOR_BTN_X = SYNC_BTN_X - EDITOR_BTN_W;
-static constexpr int EDITOR_BTN_Y = STATUS_BAR_Y;
-
-static constexpr int MENU_BTN_W = STATUS_BTN_W;
-static constexpr int MENU_BTN_H = STATUS_BAR_H;
-static constexpr int MENU_BTN_X = EDITOR_BTN_X - MENU_BTN_W;
-static constexpr int MENU_BTN_Y = STATUS_BAR_Y;
-
-// Everything left of the leftmost reserved button: outlined, holds the
-// boot title until some future button claims part of it.
 static constexpr int STATUS_TITLE_X = 0;
 static constexpr int STATUS_TITLE_Y = STATUS_BAR_Y;
-static constexpr int STATUS_TITLE_W = MENU_BTN_X - STATUS_TITLE_X;
 static constexpr int STATUS_TITLE_H = STATUS_BAR_H;
+
+
 
 // `display` is a global owned by the hal (declared extern in HalDisplay.h,
 // defined in HalDisplay.cpp) -- do not shadow it with a local instance.
@@ -158,6 +155,30 @@ static EpdFontFamily screenMono3Family(&screenMono3Font);
 static char sdLine[96] = "SD: not probed";
 static bool firstPaintDone = false;
 static bool g_oskVisible = false;
+
+// Call once, after the UI font is registered -- it measures text.
+static void layoutStatusBar() {
+  const int syncPad = (STATUS_BTN_W - renderer.getTextWidth(FONT_UI, "SYNC")) / 2;
+  auto widthFor = [&](const char* label) {
+    const int w = renderer.getTextWidth(FONT_UI, label) + 2 * syncPad;
+    return w < STATUS_BTN_W ? STATUS_BTN_W : w;  // never narrower than the others
+  };
+
+  g_bleW = STATUS_BTN_W;
+  g_kbdW = STATUS_BTN_W;
+  g_syncW = STATUS_BTN_W;
+  g_editorW = widthFor("EDITOR");
+  g_readerW = widthFor("READER");
+
+  g_bleX = PANEL_W - g_bleW;
+  g_kbdX = g_bleX - g_kbdW;
+  g_syncX = g_kbdX - g_syncW;
+  g_editorX = g_syncX - g_editorW;
+  g_readerX = g_editorX - g_readerW;
+  g_titleW = g_readerX - STATUS_TITLE_X;
+
+  Serial.printf("[ui] status bar: pad=%d reader=%d editor=%d title=%d\n", syncPad, g_readerW, g_editorW, g_titleW);
+}
 
 // Defined in input_handler.cpp; also written by tb_bridge.cpp/tb_runtime.cpp
 // whenever the interpreter changes what's on screen.
@@ -256,12 +277,12 @@ static void drawTerminalContent() {
 
 static void drawToggleButton() {
   const int inset = 2;
-  renderer.drawRect(TOGGLE_X + inset, TOGGLE_Y + inset, TOGGLE_W - 2 * inset, TOGGLE_H - 2 * inset,
+  renderer.drawRect(g_kbdX + inset, STATUS_BAR_Y + inset, g_kbdW - 2 * inset, STATUS_BAR_H - 2 * inset,
                      true);
   const char* label = g_oskVisible ? "Hide" : "KBD";
   const int tw = renderer.getTextWidth(FONT_UI, label);
-  const int tx = TOGGLE_X + (TOGGLE_W - tw) / 2;
-  const int ty = TOGGLE_Y + (TOGGLE_H - renderer.getLineHeight(FONT_UI)) / 2;
+  const int tx = g_kbdX + (g_kbdW - tw) / 2;
+  const int ty = STATUS_BAR_Y + (STATUS_BAR_H - renderer.getLineHeight(FONT_UI)) / 2;
   renderer.drawText(FONT_UI, tx, ty, label);
 }
 
@@ -279,16 +300,16 @@ static void drawBleButton() {
   const int inset = 2;
   const bool connected = BleHid.isConnected();
   if (connected) {
-    renderer.fillRect(BLE_TOGGLE_X + inset, BLE_TOGGLE_Y + inset, BLE_TOGGLE_W - 2 * inset,
-                       BLE_TOGGLE_H - 2 * inset, true);
+    renderer.fillRect(g_bleX + inset, STATUS_BAR_Y + inset, g_bleW - 2 * inset,
+                       STATUS_BAR_H - 2 * inset, true);
   } else {
-    renderer.drawRect(BLE_TOGGLE_X + inset, BLE_TOGGLE_Y + inset, BLE_TOGGLE_W - 2 * inset,
-                       BLE_TOGGLE_H - 2 * inset, true);
+    renderer.drawRect(g_bleX + inset, STATUS_BAR_Y + inset, g_bleW - 2 * inset,
+                       STATUS_BAR_H - 2 * inset, true);
   }
   const char* label = "BLE";
   const int tw = renderer.getTextWidth(FONT_UI, label);
-  const int tx = BLE_TOGGLE_X + (BLE_TOGGLE_W - tw) / 2;
-  const int ty = BLE_TOGGLE_Y + (BLE_TOGGLE_H - renderer.getLineHeight(FONT_UI)) / 2;
+  const int tx = g_bleX + (g_bleW - tw) / 2;
+  const int ty = STATUS_BAR_Y + (STATUS_BAR_H - renderer.getLineHeight(FONT_UI)) / 2;
   renderer.drawText(FONT_UI, tx, ty, label, !connected);
 }
 
@@ -314,31 +335,59 @@ static void drawSyncButton() {
   const int inset = 2;
   const bool active = isWifiSyncActive();
   if (active) {
-    renderer.fillRect(SYNC_BTN_X + inset, SYNC_BTN_Y + inset, SYNC_BTN_W - 2 * inset,
-                       SYNC_BTN_H - 2 * inset, true);
+    renderer.fillRect(g_syncX + inset, STATUS_BAR_Y + inset, g_syncW - 2 * inset,
+                       STATUS_BAR_H - 2 * inset, true);
   } else {
-    renderer.drawRect(SYNC_BTN_X + inset, SYNC_BTN_Y + inset, SYNC_BTN_W - 2 * inset,
-                       SYNC_BTN_H - 2 * inset, true);
+    renderer.drawRect(g_syncX + inset, STATUS_BAR_Y + inset, g_syncW - 2 * inset,
+                       STATUS_BAR_H - 2 * inset, true);
   }
   const char* label = "SYNC";
   const int tw = renderer.getTextWidth(FONT_UI, label);
-  const int tx = SYNC_BTN_X + (SYNC_BTN_W - tw) / 2;
-  const int ty = SYNC_BTN_Y + (SYNC_BTN_H - renderer.getLineHeight(FONT_UI)) / 2;
+  const int tx = g_syncX + (g_syncW - tw) / 2;
+  const int ty = STATUS_BAR_Y + (STATUS_BAR_H - renderer.getLineHeight(FONT_UI)) / 2;
   renderer.drawText(FONT_UI, tx, ty, label, !active);
 }
 
-// Everything in the status bar: the reserved placeholder buttons, the
+// The sibling app to hand control back to, resolved once at boot.
+// partitionSubtype 0 means "no sibling found", which is the normal state on a
+// unit flashed with this firmware alone -- the READER button then says so
+// instead of doing nothing silently.
+static int g_readerSubtype = 0;
+static char g_readerName[32] = "READER";
+
+// Set while the confirmation for it is on screen; see drawReaderConfirm().
+static bool g_readerConfirm = false;
+
+// READER: filled while its confirmation is up (matching BLE/SYNC's own "armed"
+// convention), outlined otherwise.
+static void drawReaderButton() {
+  const int inset = 2;
+  if (g_readerConfirm) {
+    renderer.fillRect(g_readerX + inset, STATUS_BAR_Y + inset, g_readerW - 2 * inset,
+                       STATUS_BAR_H - 2 * inset, true);
+  } else {
+    renderer.drawRect(g_readerX + inset, STATUS_BAR_Y + inset, g_readerW - 2 * inset,
+                       STATUS_BAR_H - 2 * inset, true);
+  }
+  const char* label = "READER";
+  const int tw = renderer.getTextWidth(FONT_UI, label);
+  const int tx = g_readerX + (g_readerW - tw) / 2;
+  const int ty = STATUS_BAR_Y + (STATUS_BAR_H - renderer.getLineHeight(FONT_UI)) / 2;
+  renderer.drawText(FONT_UI, tx, ty, label, !g_readerConfirm);
+}
+
+// Everything in the status bar: the reserved placeholder button, the
 // live ones, and the outlined title area filling whatever's left of the
-// bar (STATUS_TITLE_W already accounts for how many buttons exist).
+// bar (g_titleW already accounts for how many buttons exist).
 static void drawStatusBar() {
-  drawPlaceholderButton(MENU_BTN_X, MENU_BTN_Y, MENU_BTN_W, MENU_BTN_H, "MENU");
-  drawPlaceholderButton(EDITOR_BTN_X, EDITOR_BTN_Y, EDITOR_BTN_W, EDITOR_BTN_H, "EDITOR");
+  drawReaderButton();
+  drawPlaceholderButton(g_editorX, STATUS_BAR_Y, g_editorW, STATUS_BAR_H, "EDITOR");
   drawSyncButton();
   drawToggleButton();
   drawBleButton();
 
   const int inset = 2;
-  renderer.drawRect(STATUS_TITLE_X + inset, STATUS_TITLE_Y + inset, STATUS_TITLE_W - 2 * inset,
+  renderer.drawRect(STATUS_TITLE_X + inset, STATUS_TITLE_Y + inset, g_titleW - 2 * inset,
                      STATUS_TITLE_H - 2 * inset, true);
   const char* title = "FSP MicroBASIC Paper S3 v0.4";
   // Left-aligned, not centered like the buttons -- a title reads as a label
@@ -458,6 +507,76 @@ static void drawWifiUi() {
   }
 }
 
+static void drawScreen();  // defined below; the confirm handler repaints via it
+
+// Confirmation for the READER switch. Deliberately modal and centered rather
+// than a second tap on the button itself: switching reboots into a different
+// firmware, so it should take a decision, not a slip. Both buttons are real
+// tap targets AND Enter/Esc work, since the on-screen keyboard may well be
+// hidden when someone reaches for this.
+static constexpr int CONFIRM_W = 560;
+static constexpr int CONFIRM_H = 170;
+static constexpr int CONFIRM_X = (PANEL_W - CONFIRM_W) / 2;
+static constexpr int CONFIRM_Y = STATUS_BAR_Y + STATUS_BAR_H + 40;
+static constexpr int CONFIRM_BTN_W = 180;
+static constexpr int CONFIRM_BTN_H = 48;
+static constexpr int CONFIRM_BTN_Y = CONFIRM_Y + CONFIRM_H - CONFIRM_BTN_H - 20;
+static constexpr int CONFIRM_YES_X = CONFIRM_X + 40;
+static constexpr int CONFIRM_NO_X = CONFIRM_X + CONFIRM_W - CONFIRM_BTN_W - 40;
+
+static void drawConfirmButton(int x, const char* label) {
+  renderer.drawRect(x, CONFIRM_BTN_Y, CONFIRM_BTN_W, CONFIRM_BTN_H, true);
+  const int tw = renderer.getTextWidth(FONT_UI, label);
+  renderer.drawText(FONT_UI, x + (CONFIRM_BTN_W - tw) / 2,
+                    CONFIRM_BTN_Y + (CONFIRM_BTN_H - renderer.getLineHeight(FONT_UI)) / 2, label);
+}
+
+static void drawReaderConfirm() {
+  renderer.fillRect(CONFIRM_X, CONFIRM_Y, CONFIRM_W, CONFIRM_H, false);
+  renderer.drawRect(CONFIRM_X, CONFIRM_Y, CONFIRM_W, CONFIRM_H, true);
+
+  char line[64];
+  snprintf(line, sizeof(line), "Restart into %s?", g_readerName);
+  const int lh = renderer.getLineHeight(FONT_UI);
+  int tw = renderer.getTextWidth(FONT_UI, line);
+  renderer.drawText(FONT_UI, CONFIRM_X + (CONFIRM_W - tw) / 2, CONFIRM_Y + 26, line);
+
+  const char* sub = "This reboots the device.";
+  tw = renderer.getTextWidth(FONT_SMALL, sub);
+  renderer.drawText(FONT_SMALL, CONFIRM_X + (CONFIRM_W - tw) / 2, CONFIRM_Y + 26 + lh + 6, sub);
+
+  drawConfirmButton(CONFIRM_YES_X, "Yes (Enter)");
+  drawConfirmButton(CONFIRM_NO_X, "No (Esc)");
+}
+
+// Shared by the tap handler and the key handler so both paths behave
+// identically -- see handleTouchTap()'s own note on why that matters.
+// Both of these must set screenDirty themselves. The modal's key path in
+// loop() deliberately bypasses processAllInput(), which is what normally marks
+// the screen dirty on a keystroke -- so without this, Esc clears the flag but
+// leaves the dialog painted until something else happens to dirty the buffer.
+// On e-ink that reads as "Esc did nothing", and worse, the keys after it go to
+// the editor behind a dialog that is visually still there. The touch path was
+// never affected: handleTouchTap()'s caller sets screenDirty on a true return.
+static void readerConfirmAccept() {
+  g_readerConfirm = false;
+  if (g_readerSubtype == 0) {
+    screenDirty = true;
+    return;
+  }
+  screenEditorTermPrintLine("Switching...");
+  drawScreen();
+  switchToOtaApp(g_readerSubtype);  // reboots; only returns if it failed
+  screenEditorTermPrintLine("Switch failed -- staying here.");
+  screenDirty = true;  // the drawScreen() above was the last paint; without
+                       // this the failure message would never reach the glass
+}
+
+static void readerConfirmCancel() {
+  g_readerConfirm = false;
+  screenDirty = true;
+}
+
 static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
   return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
 }
@@ -481,20 +600,37 @@ void startWifiSyncFromCommand() {
 // dispatch, and diverging would mean a tap behaving differently depending
 // on whether a program happened to be running when it landed.
 static bool handleTouchTap(int lx, int ly) {
-  if (tapInRect(lx, ly, TOGGLE_X, TOGGLE_Y, TOGGLE_W, TOGGLE_H)) {
+  // The confirmation is modal: while it is up it swallows every tap, so a
+  // stray hit on the status bar underneath can't act behind it.
+  if (g_readerConfirm) {
+    if (tapInRect(lx, ly, CONFIRM_YES_X, CONFIRM_BTN_Y, CONFIRM_BTN_W, CONFIRM_BTN_H)) {
+      readerConfirmAccept();
+    } else if (tapInRect(lx, ly, CONFIRM_NO_X, CONFIRM_BTN_Y, CONFIRM_BTN_W, CONFIRM_BTN_H)) {
+      readerConfirmCancel();
+    }
+    return true;
+  }
+  if (tapInRect(lx, ly, g_kbdX, STATUS_BAR_Y, g_kbdW, STATUS_BAR_H)) {
     g_oskVisible = !g_oskVisible;
     return true;
   }
-  if (tapInRect(lx, ly, BLE_TOGGLE_X, BLE_TOGGLE_Y, BLE_TOGGLE_W, BLE_TOGGLE_H)) {
+  if (tapInRect(lx, ly, g_bleX, STATUS_BAR_Y, g_bleW, STATUS_BAR_H)) {
     forceBlePairingNow();
     return true;
   }
-  if (tapInRect(lx, ly, SYNC_BTN_X, SYNC_BTN_Y, SYNC_BTN_W, SYNC_BTN_H)) {
+  if (tapInRect(lx, ly, g_syncX, STATUS_BAR_Y, g_syncW, STATUS_BAR_H)) {
     startWifiSyncFromCommand();
     return true;
   }
-  if (tapInRect(lx, ly, MENU_BTN_X, MENU_BTN_Y, MENU_BTN_W, MENU_BTN_H) ||
-      tapInRect(lx, ly, EDITOR_BTN_X, EDITOR_BTN_Y, EDITOR_BTN_W, EDITOR_BTN_H)) {
+  if (tapInRect(lx, ly, g_readerX, STATUS_BAR_Y, g_readerW, STATUS_BAR_H)) {
+    if (g_readerSubtype == 0) {
+      screenEditorTermPrintLine("No sibling app in the other OTA slot.");
+    } else {
+      g_readerConfirm = true;
+    }
+    return true;
+  }
+  if (tapInRect(lx, ly, g_editorX, STATUS_BAR_Y, g_editorW, STATUS_BAR_H)) {
     return false;  // reserved slot, not wired to anything yet
   }
   if (g_oskVisible) {
@@ -521,6 +657,7 @@ static void drawScreen() {
   }
   drawStatusBar();
   if (g_oskVisible) oskDraw();
+  if (g_readerConfirm) drawReaderConfirm();  // last: modal, draws over everything
 
   Serial.printf("[paint] displayBuffer(%s) ...\n", firstPaintDone ? "FAST" : "FULL");
   Serial.flush();
@@ -748,6 +885,9 @@ STEP("fonts");
   renderer.insertFont(FONT_SCREEN_MONO_2, screenMono2Family);
   renderer.insertFont(FONT_SCREEN_MONO_3, screenMono3Family);
 
+  // Needs FONT_UI registered above -- it measures the labels.
+  layoutStatusBar();
+
 STEP("input.begin");
   input.begin();
 STEP("probeSdCard");
@@ -775,6 +915,22 @@ STEP("BleHid.begin");
   // to a bonded keyboard) during every WiFi attempt, which is exactly the
   // variable the WiFi-connect-failure investigation needs to rule out. See
   // docs/DEVELOPMENT_LOG.md.
+
+STEP("ota_apps");
+  // Registering the name is what turns "OTA Slot 1" into "MicroBASIC" in the
+  // reader's own switch menu -- it reads this out of shared NVS, so it takes
+  // effect on ITS next boot, with nothing to reflash on that side.
+  registerOtaAppName("MicroBASIC");
+  {
+    OtaAppEntry apps[MAX_OTA_APPS];
+    const int n = detectOtaApps(apps, MAX_OTA_APPS);
+    if (n > 0) {
+      g_readerSubtype = apps[0].partitionSubtype;
+      strncpy(g_readerName, apps[0].name, sizeof(g_readerName) - 1);
+      g_readerName[sizeof(g_readerName) - 1] = '\0';
+    }
+    Serial.printf("[ota] sibling apps=%d target=0x%02X name=%s\n", n, g_readerSubtype, g_readerName);
+  }
 
 STEP("screenEditorSetMode");
   screenEditorSetMode(2);  // SCREEN 2 (64-col), this panel's default -- see README
@@ -870,7 +1026,23 @@ void loop() {
   // While the WiFi setup screen is up, every key goes to syncHandleKey()
   // instead of the screen editor -- same underlying queue, different
   // dispatch (see dequeueKeyEventForCaller()'s own comment).
-  if (isWifiSyncActive()) {
+  if (g_readerConfirm) {
+    // Same modal rule as the tap handler: keys go to the confirmation and
+    // nowhere else, so nothing types into the terminal behind it.
+    uint8_t rCode, rMods;
+    bool rPressed;
+    while (dequeueKeyEventForCaller(rCode, rMods, rPressed)) {
+      if (!rPressed) continue;
+      if (rCode == HID_KEY_ENTER) {
+        readerConfirmAccept();
+        break;
+      }
+      if (rCode == HID_KEY_ESCAPE) {
+        readerConfirmCancel();
+        break;
+      }
+    }
+  } else if (isWifiSyncActive()) {
     uint8_t wCode, wMods;
     bool wPressed;
     while (dequeueKeyEventForCaller(wCode, wMods, wPressed)) {

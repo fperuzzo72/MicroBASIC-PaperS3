@@ -86,18 +86,33 @@ That wraps ESP-IDF's own `otatool.py`, so the `otadata` entry (a sequence
 number plus its CRC) is written by the vendor's implementation rather than a
 hand-rolled one. Power-cycle with the physical button afterwards.
 
-**CrossPoint can already do it from the device**: its Home menu lists this
-firmware after Settings and switching reboots straight into it (see
-`crosspoint-reader-m5papers3/src/util/OtaApps.h`). The label reads "OTA Slot 1"
-until MicroBASIC registers a display name of its own.
+Both directions now work from the device itself, so the USB script is only a
+fallback:
 
-The return trip does not exist yet, so getting back to the reader from here
-means `editor/boot-slot.sh 0` over USB. Building it means bringing
-`OtaBootSwitch` across, plus `confirmLastOtaSwitch()`'s fix for the
-rollback-on-next-reset trap described in
-`patches/cpr-vcodex/01_create_otaapps_h.py`, and a
-`registerOtaAppName("MicroBASIC")` at boot so the reader stops calling this
-"OTA Slot 1". CrossPoint's `src/util/OtaApps.h`/`.cpp` is the shape to copy.
+* **CrossPoint -> MicroBASIC**: its Home menu lists this firmware after
+  Settings (see `crosspoint-reader-m5papers3/src/util/OtaApps.h`).
+* **MicroBASIC -> CrossPoint**: the **READER** button in the status bar, behind
+  a confirmation, since the cost of a stray tap is a reboot into another
+  firmware. `editor/src/ota_apps.cpp`.
+
+The reader is found rather than hardcoded: `detectOtaApps()` walks the OTA
+partitions, skips the running one, and accepts a slot only if it holds a
+*different* project (an `esp_app_desc_t.project_name` comparison), so an empty
+slot or a stale copy of this same firmware is never offered. Its display name
+comes from shared NVS, which is what `registerOtaAppName("MicroBASIC")` writes
+at boot -- that is what turns "OTA Slot 1" into "MicroBASIC" in the reader's
+own menu, on its next boot, with nothing to reflash on that side.
+
+One deliberate difference from CrossPoint's copy: it writes the new otadata
+entry as `ESP_OTA_IMG_NEW` and then calls `confirmLastOtaSwitch()` to rewrite
+it as `VALID`, because its own path is shared with a real self-update that
+*should* keep the bootloader's rollback net. Nothing here shares that path --
+this only ever points at an already-flashed, previously-working sibling -- so
+`ota_apps.cpp` writes `VALID` directly. Same end state, one flash write
+instead of two. Left as `NEW`, the first reset before the app marks itself
+valid (neither app calls `esp_ota_mark_app_valid_cancel_rollback()`) rolls
+silently back to the other slot, which shows up as waking from sleep in the
+app you just left.
 
 ## One consequence worth knowing
 

@@ -15,7 +15,7 @@ switching apps writes 32 bytes and never touches an app image.
 The layout lives in [`editor/partitions.csv`](../editor/partitions.csv), and
 the identical table lives in
 `crosspoint-reader-m5papers3/partitions_m5papers3.csv`. **Those two files must
-stay byte-identical below their comment headers** — there is one table on the
+stay byte-identical below their comment headers.** There is one table on the
 device, and each project only describes it.
 
 ```
@@ -29,7 +29,7 @@ spiffs    data  spiffs    0xD30000  2880K   (reserved; nothing uses it today)
 
 Slots are symmetric at 6656K rather than sized to today's binaries. CrossPoint
 needs ~5.2MB and sets the size for both; this firmware uses ~1.7MB of its slot.
-Whatever project lands in a slot next should not force a re-partition — the
+Whatever project lands in a slot next should not force a re-partition. The
 whole point is that this table is written **once**. That is the change from the
 previous single-app layout, which was sized to MicroBASIC alone (a 3MB `app0`)
 and left no room for anything else.
@@ -45,7 +45,7 @@ recipe (write the table at `0x8000`, erase `nvs` and `otadata`, then write both
 apps). It is written from that repo because CrossPoint is the app that lands in
 `app0` and boots by default from an erased `otadata`.
 
-The bootloader is deliberately left alone throughout — M5Launcher's original is
+The bootloader is deliberately left alone throughout. M5Launcher's original is
 still what is in flash, and is the only one ever confirmed to work here. See
 `DEVELOPMENT_LOG.md`'s "The EPD rail was never powered" for why it *looked*
 load-bearing for so long, and why it probably is not.
@@ -70,7 +70,7 @@ against the real 6656K ceiling.
 
 **Do not use `pio run -t upload`.** It writes four images, not one:
 `bootloader.bin` at `0x0`, the partition table at `0x8000`, `boot_app0.bin` at
-`0x11000` — which resets `otadata` to "boot slot 0" — and the app. From here
+`0x11000`, which resets `otadata` to "boot slot 0", and the app. From here
 that means flashing MicroBASIC into `app1` and then booting CrossPoint instead,
 which reads as "my flash didn't take".
 

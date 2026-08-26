@@ -31,11 +31,37 @@ reaches the interpreter (`editor/src/input_handler.cpp`):
 | `SCREEN` | prints the current mode (0-3) |
 | `SCREEN <n>` | switches to that mode (see the table below) |
 | `FILES`, `DIR` | aliases for `CATALOG` — list `/MicroBASIC/programs` |
-| `SYNC` | opens the WiFi file-transfer wizard — same as tapping the "SYNC" status button |
+| `SYNC` | opens the WiFi file-transfer wizard, same as tapping the "SYNC" status button |
+| `EDITOR` | opens the file browser, same as tapping the "EDITOR" status button |
+| `READER` | reboots into the CrossPoint reader, same as tapping "READER" |
 
-The status bar's **READER** button reboots into the CrossPoint reader in the
-other OTA slot, behind a confirmation
-([docs/DUAL_BOOT.md](docs/DUAL_BOOT.md)). It has no typed equivalent yet.
+Every status-bar button that does something has a typed equivalent, so the
+device is fully operable without touching the screen.
+
+### EDITOR, the file browser
+
+Four entries, which are the four things there are to do with the two
+collections:
+
+| Entry | Folder |
+|---|---|
+| Programs, New program | `/MicroBASIC/programs`, the folder `SAVE`/`LOAD` use |
+| Notes, New note | `/notes`, at the card's root |
+
+Notes live at the root, deliberately not under `/MicroBASIC`: that is where
+MicroWriter has always kept them, so one SD card can move between this device,
+a MicroWriter and an X4 MicroBASIC and every machine finds the same notes.
+
+Navigation is the same inverted highlight bar the WiFi network list uses:
+Up/Down move, Enter chooses, Esc backs out one level at a time. The two
+collections are listed differently on purpose. Programs show the real
+**filename**, because `LOAD "X"` has to find the file, so what is listed must
+be what LOAD takes; notes show a **title**, with the filename an
+implementation detail, which is MicroWriter's behaviour.
+
+The prose editor itself is not ported yet, so today choosing a program hands
+it straight to the interpreter (`LOAD "name"`). Creating files, and opening a
+note, say so rather than appearing to work.
 
 Everything else — `PRINT`, `LET`, `INPUT`, `IF`/`THEN`, `FOR`/`NEXT`,
 `GOSUB`/`RETURN`, `DIM`, `READ`/`DATA`, `LOAD`, `SAVE`, `CATALOG`, `DELETE`,

@@ -41,6 +41,7 @@
 #include "osk.h"
 #include "screen_editor.h"
 #include "tb_bridge.h"
+#include "file_browser.h"
 #include "ota_apps.h"
 #include "wifi_sync.h"
 #include <BleKeyboardHost.h>
@@ -407,14 +408,19 @@ static void drawStatusBar() {
 // on-screen keyboard's, with no per-row touch targets to hit-test, per the
 // design discussion this was built from. Password characters are shown as
 // dots, matching how every other WiFi password entry UI does it.
+// The band a full-screen UI (the WiFi wizard, the EDITOR browser) draws into:
+// everything between the status bar and whatever is below it. Its HEIGHT is
+// not fixed, because the on-screen keyboard can be toggled away while one of
+// those screens is up -- when it is hidden there are another 360px to use, and
+// a list that stayed at the with-keyboard height would waste them.
 static constexpr int WIFI_UI_X = 0;
 static constexpr int WIFI_UI_Y = STATUS_BAR_Y + STATUS_BAR_H;
 static constexpr int WIFI_UI_W = PANEL_W;
-static constexpr int WIFI_UI_H = OSK_Y - WIFI_UI_Y;
+static int contentBandH() { return (g_oskVisible ? OSK_Y : PANEL_H) - WIFI_UI_Y; }
 
 static void drawWifiCentered(const char* line1, const char* line2 = nullptr) {
   const int lh = renderer.getLineHeight(FONT_UI);
-  const int ty1 = WIFI_UI_Y + WIFI_UI_H / 2 - (line2 ? lh : lh / 2);
+  const int ty1 = WIFI_UI_Y + contentBandH() / 2 - (line2 ? lh : lh / 2);
   const int tw1 = renderer.getTextWidth(FONT_UI, line1);
   renderer.drawText(FONT_UI, WIFI_UI_X + (WIFI_UI_W - tw1) / 2, ty1, line1);
   if (line2) {
@@ -425,7 +431,7 @@ static void drawWifiCentered(const char* line1, const char* line2 = nullptr) {
 
 static void drawNetworkList() {
   const int rowH = renderer.getLineHeight(FONT_SMALL) + 4;
-  const int visibleRows = WIFI_UI_H / rowH;
+  const int visibleRows = contentBandH() / rowH;
   const int count = getNetworkCount();
   const int sel = getSelectedNetwork();
 
@@ -469,6 +475,46 @@ static void drawPasswordEntry() {
   for (int i = 0; i < shown; i++) dots[i] = '*';
   dots[shown] = '\0';
   renderer.drawText(FONT_UI, 8, WIFI_UI_Y + 8 + lh + 8, dots[0] ? dots : "(type on the keyboard below)");
+}
+
+// EDITOR screen. Same band and same inverted-highlight-bar idiom as the WiFi
+// network list, so the two navigate identically -- see file_browser.h.
+static void drawBrowserUi() {
+  const int rowH = renderer.getLineHeight(FONT_SMALL) + 4;
+  const int visibleRows = contentBandH() / rowH;
+  const bool menu = getBrowserState() == BrowserState::MENU;
+  const int count = menu ? BROWSER_MENU_COUNT : getFileCount();
+  const int sel = getBrowserSelection();
+
+  const char* status = browserStatusText();
+  if (count == 0) {
+    drawWifiCentered(status[0] ? status : "Nothing here", "Esc to go back");
+    return;
+  }
+
+  // Same minimal-scroll window the network list uses.
+  static int scrollTop = 0;
+  if (sel < scrollTop) scrollTop = sel;
+  if (sel >= scrollTop + visibleRows) scrollTop = sel - visibleRows + 1;
+  if (scrollTop > count - visibleRows) scrollTop = count > visibleRows ? count - visibleRows : 0;
+  if (scrollTop < 0) scrollTop = 0;
+
+  for (int row = 0; row < visibleRows && scrollTop + row < count; row++) {
+    const int i = scrollTop + row;
+    const int y = WIFI_UI_Y + row * rowH;
+    const bool selected = (i == sel);
+    if (selected) renderer.fillRect(WIFI_UI_X, y, WIFI_UI_W, rowH, true);
+
+    const char* label = menu ? browserMenuLabel(i) : getFileList()[i].title;
+    const int ty = y + (rowH - renderer.getLineHeight(FONT_SMALL)) / 2;
+    renderer.drawText(FONT_SMALL, 8, ty, label, !selected);
+  }
+
+  // Status line goes in the last visible row rather than over a list entry.
+  if (status[0]) {
+    const int y = WIFI_UI_Y + contentBandH() - renderer.getLineHeight(FONT_SMALL);
+    renderer.drawText(FONT_SMALL, 8, y, status);
+  }
 }
 
 static void drawWifiUi() {
@@ -582,6 +628,19 @@ static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
 }
 
 // Declared in input_handler.h -- see its doc comment.
+void startEditorFromCommand() {
+  if (isBrowserActive()) return;
+  // Only when there is no other way to send an arrow key. SYNC forces the
+  // keyboard unconditionally because it SUSPENDS BLE partway through, so a
+  // BLE-only typist would be stranded mid-flow; nothing here suspends
+  // anything, so a connected keyboard is reason enough to leave the screen
+  // whole. The KBD button still toggles it either way, and the list grows
+  // into the space when it is hidden (see contentBandH()).
+  if (!BleHid.isConnected()) g_oskVisible = true;
+  browserStart();
+}
+
+// Declared in input_handler.h -- see its doc comment.
 void startReaderSwitchFromCommand() {
   if (g_readerSubtype == 0) {
     screenEditorTermPrintLine("No sibling app in the other OTA slot.");
@@ -641,7 +700,8 @@ static bool handleTouchTap(int lx, int ly) {
     return true;
   }
   if (tapInRect(lx, ly, g_editorX, STATUS_BAR_Y, g_editorW, STATUS_BAR_H)) {
-    return false;  // reserved slot, not wired to anything yet
+    startEditorFromCommand();
+    return true;
   }
   if (g_oskVisible) {
     // oskHandleTap() bounds-checks against the region passed to oskInit()
@@ -662,6 +722,8 @@ static void drawScreen() {
   renderer.clearScreen();
   if (isWifiSyncActive()) {
     drawWifiUi();
+  } else if (isBrowserActive()) {
+    drawBrowserUi();
   } else {
     drawTerminalContent();
   }
@@ -1051,6 +1113,12 @@ void loop() {
         readerConfirmCancel();
         break;
       }
+    }
+  } else if (isBrowserActive()) {
+    uint8_t bCode, bMods;
+    bool bPressed;
+    while (dequeueKeyEventForCaller(bCode, bMods, bPressed)) {
+      if (bPressed) browserHandleKey(bCode, bMods);
     }
   } else if (isWifiSyncActive()) {
     uint8_t wCode, wMods;

@@ -51,6 +51,36 @@ static constexpr int SCREEN_EDITOR_MAX_ROWS = 22;
 static constexpr int MAX_PROGRAM_LINE_LEN = 160;
 
 static constexpr int MAX_FILENAME_LEN = 64;
+static constexpr int MAX_TITLE_LEN = 40;
+
+// One entry in a browsed folder. `title` is what the browser shows for a
+// note (MicroWriter's convention, where the filename is an implementation
+// detail); for a program it is the filename itself, because `LOAD "X"` has to
+// find the file, so what is listed must be what LOAD takes. See
+// file_manager.h.
+struct FileInfo {
+  char filename[MAX_FILENAME_LEN];
+  char title[MAX_TITLE_LEN];
+  unsigned long modTime;
+};
+
+static constexpr int MAX_FILES = 50;
+
+// A hard ceiling on how large a file the editor will open, not a function of
+// free memory: the buffer is allocated once and reused, so a note that fits
+// today keeps fitting. file_manager.cpp's loadFile() reads at most
+// TEXT_BUFFER_SIZE - 1 bytes and truncates beyond that.
+static constexpr size_t TEXT_BUFFER_SIZE = 16384;
+
+// Wrapped display lines the editor will track for one buffer.
+static constexpr int MAX_LINES = 1024;
+
+// Ported modules (file_manager.cpp, text_editor.cpp) log through these. This
+// build always has serial, so they map straight onto it -- the X4's
+// RELEASE_BUILD switch that could compile them out isn't carried over.
+#define DBG_PRINTF(fmt, ...)  Serial.printf(fmt, ##__VA_ARGS__)
+#define DBG_PRINTLN(s)        Serial.println(s)
+#define DBG_PRINT(s)          Serial.print(s)
 
 // Reject a browser upload (wifi_sync.cpp) bigger than this -- matches the
 // X4's own PROGRAM_UPLOAD_MAX_SIZE. Programs aren't bounded by any editor

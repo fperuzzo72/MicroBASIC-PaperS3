@@ -46,6 +46,12 @@ void startWifiSyncFromCommand();
 // the screen, same as SYNC. A no-op if there is no sibling app to switch to.
 void startReaderSwitchFromCommand();
 
+// Opens the EDITOR screen (file_browser.h), the same way tapping the status
+// bar's EDITOR button does. Implemented in main.cpp, which owns the
+// on-screen-keyboard-visible flag; the list is arrow-driven, so the keyboard
+// is forced visible for the same reason SYNC does it.
+void startEditorFromCommand();
+
 // Drains the whole input queue looking for a pending break request --
 // Escape or Ctrl+C -- discarding everything else along the way. Read by the
 // runtime's checkch() (tb_runtime.cpp), which the interpreter polls after

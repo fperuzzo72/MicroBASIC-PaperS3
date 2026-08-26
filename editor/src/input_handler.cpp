@@ -146,6 +146,12 @@ static void executeLogicalLine(const char* line) {
     startReaderSwitchFromCommand();
     return;
   }
+  if (isWord("EDITOR")) {
+    // Same entry point as the status bar's EDITOR button.
+    screenEditorStartNewInputLine();
+    startEditorFromCommand();
+    return;
+  }
   if (isWord("FILES") || isWord("DIR")) {
     // Aliases: the interpreter calls its directory listing CATALOG. FILES is
     // this project's own name, DIR the one anyone from CP/M or DOS reaches

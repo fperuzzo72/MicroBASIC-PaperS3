@@ -264,11 +264,45 @@ Two traps found while wiring it up, both documented there:
   against the running app's, the same approach `patches/cpr-vcodex/`
   already takes against the CPR-vCodex fork.
 
-Switching is host-side for now (`editor/boot-slot.sh`, a wrapper over ESP-IDF's
-`otatool.py` so the otadata CRC comes from the vendor's implementation). An
-on-device MENU entry would mean porting `OtaBootSwitch` here, plus the
-`confirmLastOtaSwitch()` fix for the rollback-on-next-reset trap that
-`patches/cpr-vcodex/01_create_otaapps_h.py` describes.
+**Both directions now work from the device** (confirmed on hardware, including
+that a reboot returns to whichever app was last selected): the reader's Home
+menu comes here, and the status bar's READER button goes back
+(`editor/src/ota_apps.cpp`). `editor/boot-slot.sh` -- a wrapper over ESP-IDF's
+`otatool.py`, so the otadata CRC comes from the vendor's implementation --
+stays as the host-side fallback.
+
+One deliberate divergence from CrossPoint's copy, which is otherwise kept
+identical down to the identifier names so the two stay diffable: it writes the
+new otadata entry as `ESP_OTA_IMG_NEW` and then rewrites it to `VALID` via
+`confirmLastOtaSwitch()`, because its path is shared with a real self-update
+whose rollback net `NEW` exists to arm. Nothing here shares that path -- this
+only ever points at an already-flashed, previously-working sibling -- so
+`ota_apps.cpp` writes `VALID` in the first place. Same end state, one flash
+write instead of two. Left as `NEW`, the first reset before the app marks
+itself valid (neither app calls `esp_ota_mark_app_valid_cancel_rollback()`)
+rolls silently back to the other slot, which presents as waking from sleep in
+the app you just left.
+
+## A modal that bypasses processAllInput() must dirty the screen itself
+
+Small, but the shape recurs. The READER confirmation routes keys in `loop()`
+directly rather than through `processAllInput()`, deliberately, so nothing
+types into the terminal behind the dialog. `processAllInput()` is also what
+sets `screenDirty` on a keystroke, which is what schedules the repaint -- so
+closing the dialog with Esc cleared the flag but left the dialog painted until
+something else happened to dirty the buffer.
+
+On e-ink that reads as "Esc did nothing", and it is worse than a cosmetic lag:
+the keys after Esc go to the editor, behind a dialog that is visually still
+there. The touch path never showed it, because `handleTouchTap()`'s caller
+sets `screenDirty` whenever it returns true -- so the bug was invisible to
+exactly the input method used to build the feature. The same gap also
+swallowed the `"Switch failed"` message, which is printed after the last
+repaint.
+
+Both handlers now set `screenDirty` explicitly. Worth remembering when the
+next modal is added: bypassing `processAllInput()` means taking over
+everything it did, not just the routing.
 
 ## The EPD rail was never powered
 

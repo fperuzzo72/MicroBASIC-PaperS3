@@ -23,7 +23,7 @@ diagnostic said "success" the whole time.
 
 ### Commands
 
-Three commands are this project's own, intercepted before the line ever
+These commands are this project's own, intercepted before the line ever
 reaches the interpreter (`editor/src/input_handler.cpp`):
 
 | Command | Does |
@@ -32,6 +32,10 @@ reaches the interpreter (`editor/src/input_handler.cpp`):
 | `SCREEN <n>` | switches to that mode (see the table below) |
 | `FILES`, `DIR` | aliases for `CATALOG` — list `/MicroBASIC/programs` |
 | `SYNC` | opens the WiFi file-transfer wizard — same as tapping the "SYNC" status button |
+
+The status bar's **READER** button reboots into the CrossPoint reader in the
+other OTA slot, behind a confirmation
+([docs/DUAL_BOOT.md](docs/DUAL_BOOT.md)). It has no typed equivalent yet.
 
 Everything else — `PRINT`, `LET`, `INPUT`, `IF`/`THEN`, `FOR`/`NEXT`,
 `GOSUB`/`RETURN`, `DIM`, `READ`/`DATA`, `LOAD`, `SAVE`, `CATALOG`, `DELETE`,
@@ -245,7 +249,7 @@ All four column counts from the X4's original scheme carry over unchanged
 margin in any mode, unlike the X4's own 800px panel). Row counts are one
 lower than a straight 540px/cellH division across all four modes: the top
 30px of the panel is reserved for the status bar (KBD/BLE and the
-MENU/EDITOR/SYNC placeholders), so the terminal's own usable band is 510px,
+READER/SYNC, and the EDITOR placeholder), so the terminal's own usable band is 510px,
 not 540. `SCREEN 2` divides that exactly (17 rows, zero extra margin) — the
 nicest fit of the four, since the bar's 30px height is itself a multiple of
 its 30px cell height; the other three get a small centered top/bottom
@@ -396,11 +400,11 @@ Things the PaperS3 makes newly possible, or newly necessary:
 - **`SCREEN 4` (graphics)** was never built on the X4 for want of RAM. A 1-bit
   960×540 framebuffer is 63KB against 8MB of PSRAM here.
 - **Dual-boot/OTA** was M5Launcher's job on this device. There is no picker
-  in front of the apps any more, but the device does hold both MicroBASIC and
-  the CrossPoint reader, selected by `otadata`
-  ([docs/DUAL_BOOT.md](docs/DUAL_BOOT.md)) — today over USB, from the host.
-  An on-device MENU entry that switches to the reader and reboots would mean
-  bringing `OtaBootSwitch` across after all.
+  in front of the apps any more, but the device holds both MicroBASIC and the
+  CrossPoint reader, selected by `otadata`
+  ([docs/DUAL_BOOT.md](docs/DUAL_BOOT.md)). Both directions work from the
+  device itself — the reader's Home menu comes here, the **READER** button
+  goes back — with `editor/boot-slot.sh` left as a host-side fallback.
 
 ## License
 

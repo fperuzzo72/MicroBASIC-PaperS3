@@ -82,13 +82,18 @@ That wraps ESP-IDF's own `otatool.py`, so the `otadata` entry (a sequence
 number plus its CRC) is written by the vendor's implementation rather than a
 hand-rolled one. Power-cycle with the physical button afterwards.
 
-There is no on-device switch from this side yet. CrossPoint ships
-`ota_boot::switchTo()`, which does it from inside a running app;
-`patches/cpr-vcodex/` in this repo already wires a Home-menu shortcut onto it
-for the CPR-vCodex fork. The equivalent for MicroBASIC (a MENU entry that
-switches to the reader and reboots) does not exist yet — `OtaBootSwitch` would
-have to come across, along with `confirmLastOtaSwitch()`'s fix for the
-rollback-on-next-reset trap described in `patches/cpr-vcodex/01_create_otaapps_h.py`.
+**CrossPoint can already do it from the device**: its Home menu lists this
+firmware after Settings and switching reboots straight into it (see
+`crosspoint-reader-m5papers3/src/util/OtaApps.h`). The label reads "OTA Slot 1"
+until MicroBASIC registers a display name of its own.
+
+The return trip does not exist yet, so getting back to the reader from here
+means `editor/boot-slot.sh 0` over USB. Building it means bringing
+`OtaBootSwitch` across, plus `confirmLastOtaSwitch()`'s fix for the
+rollback-on-next-reset trap described in
+`patches/cpr-vcodex/01_create_otaapps_h.py`, and a
+`registerOtaAppName("MicroBASIC")` at boot so the reader stops calling this
+"OTA Slot 1". CrossPoint's `src/util/OtaApps.h`/`.cpp` is the shape to copy.
 
 ## One consequence worth knowing
 

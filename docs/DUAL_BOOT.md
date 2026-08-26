@@ -56,12 +56,13 @@ Build, then write only the app, only into `app1`:
 
 ```bash
 pio run -e m5papers3
-~/.platformio/penv/bin/esptool.py --chip esp32s3 --port /dev/cu.usbmodem101 --baud 921600 \
+python3 -m esptool --chip esp32s3 --port /dev/cu.usbmodem101 --baud 921600 \
     write_flash 0x6A0000 .pio/build/m5papers3/firmware.bin
 ```
 
-`esptool.py` is not on `PATH` by default: PlatformIO keeps it in its own venv,
-which is the copy that matches the toolchain this project builds with.
+`python3 -m esptool`, not a bare `esptool.py`, which is not on `PATH`. If the
+module is missing from your `python3`, PlatformIO's own copy is always there:
+`~/.platformio/penv/bin/python -m esptool`.
 
 `board_upload.offset_address` and `board_upload.maximum_size` in
 `editor/platformio.ini` track the `app1` row, so "Checking size" measures

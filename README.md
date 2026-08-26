@@ -326,11 +326,12 @@ spiffs    data  spiffs   0xD30000  2880K  (reserved; unused)
 Build the app, then write *just* `firmware.bin` into MicroBASIC's slot:
 
 ```bash
-~/.platformio/penv/bin/esptool.py --chip esp32s3 --port <port> --baud 921600 \
+python3 -m esptool --chip esp32s3 --port <port> --baud 921600 \
     write_flash 0x6A0000 .pio/build/m5papers3/firmware.bin
 ```
 
-(`esptool.py` is not on `PATH`; PlatformIO keeps it inside its own venv.)
+(The module form, since `esptool.py` is not on `PATH`. PlatformIO's own copy,
+`~/.platformio/penv/bin/python -m esptool`, is the fallback.)
 
 Switch which app boots with `editor/boot-slot.sh 0` (CrossPoint) or
 `editor/boot-slot.sh 1` (MicroBASIC) — that only rewrites `otadata`, never an

@@ -7,9 +7,11 @@
 
 #include "dead_keys.h"
 #include "input_handler.h"
+#include "text_editor.h"
+#if !MICROWRITER
 #include "screen_editor.h"
 #include "tb_bridge.h"
-#include "text_editor.h"
+#endif
 
 // Owned by input_handler.cpp; read by main.cpp's loop() to decide whether a
 // repaint is due. Declared here the same way tb_bridge.cpp and wifi_sync.cpp
@@ -41,12 +43,21 @@ bool dirtySinceSave = false;
 
 // Menu entry order is the order they are drawn in, and the order below is the
 // one the two collections read naturally in: browse, then create, for each.
+#if MICROWRITER
+enum MenuEntry {
+  MENU_NOTES = 0,
+  MENU_NEW_NOTE,
+  MENU_SYNC,
+  MENU_READER,
+};
+#else
 enum MenuEntry {
   MENU_PROGRAMS = 0,
   MENU_NEW_PROGRAM,
   MENU_NOTES,
   MENU_NEW_NOTE,
 };
+#endif
 
 void openCollection(FileCollection c) {
   setFileCollection(c);  // switches and re-lists
@@ -92,10 +103,15 @@ void startNewFile(FileCollection c) {
 
 void chooseMenuEntry() {
   switch (selection) {
-    case MENU_PROGRAMS: openCollection(FileCollection::PROGRAMS); return;
     case MENU_NOTES: openCollection(FileCollection::NOTES); return;
-    case MENU_NEW_PROGRAM: startNewFile(FileCollection::PROGRAMS); return;
     case MENU_NEW_NOTE: startNewFile(FileCollection::NOTES); return;
+#if MICROWRITER
+    case MENU_SYNC: startWifiSyncFromCommand(); return;
+    case MENU_READER: startReaderSwitchFromCommand(); return;
+#else
+    case MENU_PROGRAMS: openCollection(FileCollection::PROGRAMS); return;
+    case MENU_NEW_PROGRAM: startNewFile(FileCollection::PROGRAMS); return;
+#endif
   }
 }
 
@@ -111,6 +127,7 @@ void chooseFile() {
   if (selection < 0 || selection >= getFileCount()) return;
   const FileInfo& f = getFileList()[selection];
 
+#if !MICROWRITER
   if (loadOnChoose) {
     // Through the interpreter, not through file_manager's loadFile(): the
     // interpreter owns program memory, so loading anywhere else would leave
@@ -129,6 +146,7 @@ void chooseFile() {
     if (screenEditorGetCursorCol() != 0) screenEditorStartNewInputLine();
     return;
   }
+#endif
 
   loadFile(f.filename);
   enterEditor();
@@ -138,10 +156,15 @@ void chooseFile() {
 
 const char* browserMenuLabel(int index) {
   switch (index) {
-    case MENU_PROGRAMS: return "Programs";
-    case MENU_NEW_PROGRAM: return "New program";
     case MENU_NOTES: return "Notes";
     case MENU_NEW_NOTE: return "New note";
+#if MICROWRITER
+    case MENU_SYNC: return "Sync over WiFi";
+    case MENU_READER: return "Switch to the reader";
+#else
+    case MENU_PROGRAMS: return "Programs";
+    case MENU_NEW_PROGRAM: return "New program";
+#endif
     default: return "";
   }
 }
@@ -157,6 +180,7 @@ void browserStart() {
   screenDirty = true;
 }
 
+#if !MICROWRITER
 void browserStartVc() {
   if (active) return;
   fileManagerSetup();
@@ -172,6 +196,7 @@ void browserStartVc() {
   }
   screenDirty = true;
 }
+#endif
 
 void browserStop() {
   if (!active) return;
@@ -183,6 +208,11 @@ bool isBrowserActive() { return active; }
 BrowserState getBrowserState() { return state; }
 int getBrowserSelection() { return selection; }
 const char* browserStatusText() { return statusText; }
+
+void browserSetStatus(const char* text) {
+  snprintf(statusText, sizeof(statusText), "%s", text ? text : "");
+  screenDirty = true;
+}
 
 const char* browserTitleBuffer() { return titleBuffer; }
 
@@ -354,10 +384,17 @@ void browserHandleKey(uint8_t keyCode, uint8_t modifiers) {
         selection = 0;
         statusText[0] = '\0';
         screenDirty = true;
-      } else {
-        browserStop();
+        return;
       }
+#if MICROWRITER
+      // The menu is the bottom of this machine: there is no terminal behind
+      // it to return to, so closing here would leave a blank panel. Esc backs
+      // out of a list and then stops.
       return;
+#else
+      browserStop();
+      return;
+#endif
 
     default:
       return;

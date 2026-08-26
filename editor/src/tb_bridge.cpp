@@ -28,7 +28,7 @@ void tbSetup() {
   // Printed before basicSetup() so it lands above the interpreter's own
   // multi-line banner, giving the boot screen the shape a 1980s machine had:
   // whose computer it is first, which BASIC second.
-  screenEditorTermPrintLine("FSP MicroBASIC v0.4 for M5Stack PaperS3");
+  screenEditorTermPrintLine("FSP MicroBASIC v0.5 for M5Stack PaperS3");
   // Depois do cabecalho, nao antes: a primeira linha da tela e a
   // identificacao da maquina, e um aviso de arranque vem abaixo dela.
   if (!autoexecEnabled) screenEditorTermPrintLine("Skipping autoexec.bas (BACK held)");

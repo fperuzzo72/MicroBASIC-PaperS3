@@ -37,9 +37,13 @@
 #include "config.h"
 #include "input_handler.h"
 #include "osk.h"
-#include "screen_editor.h"
 #include "sd_datetime.h"
+#if !MICROWRITER
+#include "screen_editor.h"
+#endif
+#if !MICROWRITER
 #include "tb_bridge.h"
+#endif
 #include "file_browser.h"
 #include "text_editor.h"
 #include <Utf8.h>
@@ -169,7 +173,11 @@ static void layoutStatusBar() {
   g_bleW = STATUS_BTN_W;
   g_kbdW = STATUS_BTN_W;
   g_syncW = STATUS_BTN_W;
+#if MICROWRITER
+  g_editorW = 0;  // no EDITOR button: the browser is this machine's home screen
+#else
   g_editorW = widthFor("EDITOR");
+#endif
   g_readerW = widthFor("READER");
 
   g_bleX = PANEL_W - g_bleW;
@@ -247,6 +255,7 @@ static int codepointToUtf8(uint32_t cp, char* out) {
   return 3;
 }
 
+#if !MICROWRITER
 static void drawTerminalContent() {
   const int cols = screenEditorCols();
   const int rows = screenEditorRows();
@@ -276,6 +285,7 @@ static void drawTerminalContent() {
     renderer.fillRect(cx, cy, cellW, cellH, true);
   }
 }
+#endif
 
 static void drawToggleButton() {
   const int inset = 2;
@@ -383,7 +393,9 @@ static void drawReaderButton() {
 // bar (g_titleW already accounts for how many buttons exist).
 static void drawStatusBar() {
   drawReaderButton();
+#if !MICROWRITER
   drawPlaceholderButton(g_editorX, STATUS_BAR_Y, g_editorW, STATUS_BAR_H, "EDITOR");
+#endif
   drawSyncButton();
   drawToggleButton();
   drawBleButton();
@@ -391,7 +403,11 @@ static void drawStatusBar() {
   const int inset = 2;
   renderer.drawRect(STATUS_TITLE_X + inset, STATUS_TITLE_Y + inset, g_titleW - 2 * inset,
                      STATUS_TITLE_H - 2 * inset, true);
-  const char* title = "FSP MicroBASIC Paper S3 v0.4";
+  #if MICROWRITER
+  const char* title = "FSP MicroWriter Paper S3 v0.5";
+#else
+  const char* title = "FSP MicroBASIC Paper S3 v0.5";
+#endif
   // Left-aligned, not centered like the buttons -- a title reads as a label
   // for the bar, not another button, so it gets its own left margin instead
   // of floating in the middle of a box that's going to keep shrinking as
@@ -723,6 +739,18 @@ static void drawWifiUi() {
 
 static void drawScreen();  // defined below; the confirm handler repaints via it
 
+// Tell the user something, wherever they are looking. MicroBASIC has a
+// terminal and everything else prints into it; MicroWriter has no terminal at
+// all, so the same message goes to the browser's status line -- the screen
+// that build is always on.
+static void notify(const char* text) {
+#if MICROWRITER
+  browserSetStatus(text);
+#else
+  screenEditorTermPrintLine(text);
+#endif
+}
+
 // Confirmation for the READER switch. Deliberately modal and centered rather
 // than a second tap on the button itself: switching reboots into a different
 // firmware, so it should take a decision, not a slip. Both buttons are real
@@ -778,10 +806,10 @@ static void readerConfirmAccept() {
     screenDirty = true;
     return;
   }
-  screenEditorTermPrintLine("Switching...");
+  notify("Switching...");
   drawScreen();
   switchToOtaApp(g_readerSubtype);  // reboots; only returns if it failed
-  screenEditorTermPrintLine("Switch failed -- staying here.");
+  notify("Switch failed -- staying here.");
   screenDirty = true;  // the drawScreen() above was the last paint; without
                        // this the failure message would never reach the glass
 }
@@ -809,16 +837,18 @@ void startEditorFromCommand() {
 }
 
 // Declared in input_handler.h -- see its doc comment.
+#if !MICROWRITER
 void startVcFromCommand() {
   if (isBrowserActive()) return;
   if (!BleHid.isConnected()) g_oskVisible = true;
   browserStartVc();
 }
+#endif
 
 // Declared in input_handler.h -- see its doc comment.
 void startReaderSwitchFromCommand() {
   if (g_readerSubtype == 0) {
-    screenEditorTermPrintLine("No sibling app in the other OTA slot.");
+    notify("No sibling app in the other OTA slot.");
     return;
   }
   g_readerConfirm = true;
@@ -871,16 +901,18 @@ static bool handleTouchTap(int lx, int ly) {
   }
   if (tapInRect(lx, ly, g_readerX, STATUS_BAR_Y, g_readerW, STATUS_BAR_H)) {
     if (g_readerSubtype == 0) {
-      screenEditorTermPrintLine("No sibling app in the other OTA slot.");
+      notify("No sibling app in the other OTA slot.");
     } else {
       g_readerConfirm = true;
     }
     return true;
   }
+#if !MICROWRITER
   if (tapInRect(lx, ly, g_editorX, STATUS_BAR_Y, g_editorW, STATUS_BAR_H)) {
     startEditorFromCommand();
     return true;
   }
+#endif
   if (g_oskVisible) {
     // oskHandleTap() bounds-checks against the region passed to oskInit()
     // and returns false outside it; gated on g_oskVisible too so a tap over
@@ -902,9 +934,12 @@ static void drawScreen() {
     drawWifiUi();
   } else if (isBrowserActive()) {
     drawBrowserUi();
-  } else {
+  }
+#if !MICROWRITER
+  else {
     drawTerminalContent();
   }
+#endif
   drawStatusBar();
   if (g_oskVisible) oskDraw();
   if (g_readerConfirm) drawReaderConfirm();  // last: modal, draws over everything
@@ -1179,7 +1214,11 @@ STEP("ota_apps");
   // Registering the name is what turns "OTA Slot 1" into "MicroBASIC" in the
   // reader's own switch menu -- it reads this out of shared NVS, so it takes
   // effect on ITS next boot, with nothing to reflash on that side.
+  #if MICROWRITER
+  registerOtaAppName("MicroWriter");
+#else
   registerOtaAppName("MicroBASIC");
+#endif
   {
     OtaAppEntry apps[MAX_OTA_APPS];
     const int n = detectOtaApps(apps, MAX_OTA_APPS);
@@ -1191,11 +1230,19 @@ STEP("ota_apps");
     Serial.printf("[ota] sibling apps=%d target=0x%02X name=%s\n", n, g_readerSubtype, g_readerName);
   }
 
+#if !MICROWRITER
 STEP("screenEditorSetMode");
   screenEditorSetMode(2);  // SCREEN 2 (64-col), this panel's default -- see README
+#endif
 
 STEP("tbSetup");
+#if MICROWRITER
+  // The writing machine has no prompt to return to, so the browser is not a
+  // screen you open, it is the screen. Nothing ever closes it.
+  browserStart();
+#else
   tbSetup();  // prints the boot banner into the terminal via screenEditorTermPrintLine
+#endif
 
 STEP("drawScreen");
   drawScreen();
@@ -1229,7 +1276,9 @@ void loop() {
   // reads touch, redraws, and keeps the interface alive) never starts.
   // Internally guarded (checks st == SRUN) so calling this every iteration
   // after the first is a cheap no-op.
+#if !MICROWRITER
   tbRunPendingAutoexec();
+#endif
 
   uint8_t kbdCode, kbdMods;
   bool kbdPressed;
@@ -1266,7 +1315,7 @@ void loop() {
     char msg[48];
     snprintf(msg, sizeof(msg), "[ble] pairing code: %06lu (type on keyboard)",
               (unsigned long)passkey);
-    screenEditorTermPrintLine(msg);
+    notify(msg);
     screenDirty = true;
   }
 
@@ -1283,6 +1332,12 @@ void loop() {
   // While the WiFi setup screen is up, every key goes to syncHandleKey()
   // instead of the screen editor -- same underlying queue, different
   // dispatch (see dequeueKeyEventForCaller()'s own comment).
+  // This chain must stay in the same order as drawScreen()'s, or keys go to a
+  // screen that is not the one being drawn. They disagreed once: the browser
+  // was checked first here and second there, which nothing noticed until
+  // MicroWriter, where the browser is always open -- SYNC drew but could not
+  // be typed into or escaped from, because its keys were being handed to the
+  // browser behind it.
   if (g_readerConfirm) {
     // Same modal rule as the tap handler: keys go to the confirmation and
     // nowhere else, so nothing types into the terminal behind it.
@@ -1299,21 +1354,24 @@ void loop() {
         break;
       }
     }
-  } else if (isBrowserActive()) {
-    uint8_t bCode, bMods;
-    bool bPressed;
-    while (dequeueKeyEventForCaller(bCode, bMods, bPressed)) {
-      if (bPressed) browserHandleKey(bCode, bMods);
-    }
   } else if (isWifiSyncActive()) {
     uint8_t wCode, wMods;
     bool wPressed;
     while (dequeueKeyEventForCaller(wCode, wMods, wPressed)) {
       if (wPressed) syncHandleKey(wCode, wMods);
     }
-  } else {
+  } else if (isBrowserActive()) {
+    uint8_t bCode, bMods;
+    bool bPressed;
+    while (dequeueKeyEventForCaller(bCode, bMods, bPressed)) {
+      if (bPressed) browserHandleKey(bCode, bMods);
+    }
+  }
+#if !MICROWRITER
+  else {
     processAllInput();
   }
+#endif
 
   if (screenDirty) {
     drawScreen();

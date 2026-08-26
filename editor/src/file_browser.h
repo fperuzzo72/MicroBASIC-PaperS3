@@ -43,7 +43,21 @@ enum class BrowserState {
 
 // How many entries the menu has, and what they say. Kept here rather than in
 // the drawing code so the two cannot disagree about the count.
+// MicroWriter has no programs folder to browse: the interpreter that gives
+// .bas files their meaning is not in that build at all, so offering them
+// would be offering a dead end.
+//
+// MicroWriter's menu also carries SYNC and READER. MicroBASIC does not need
+// them there: it has a prompt, and typing SYNC or READER reaches the same
+// place. This machine has no prompt, so without menu entries those two would
+// be touch-only, and the whole point of the keyboard is not having to reach
+// for the screen. KBD is deliberately NOT among them -- asking for the
+// on-screen keyboard already means you are touching the screen.
+#if MICROWRITER
 constexpr int BROWSER_MENU_COUNT = 4;
+#else
+constexpr int BROWSER_MENU_COUNT = 4;
+#endif
 const char* browserMenuLabel(int index);
 
 void browserStart();  // opens at MENU; no-op if already open
@@ -58,13 +72,20 @@ void browserStart();  // opens at MENU; no-op if already open
 // ported: it would mean a second list renderer to maintain beside this one,
 // for a difference in looks rather than in what it does. The list here is
 // the same one the browser already uses.
+#if !MICROWRITER
 void browserStartVc();
+#endif
 void browserStop();
 bool isBrowserActive();
 
 BrowserState getBrowserState();
 int getBrowserSelection();       // index into the menu, or into the file list
 const char* browserStatusText();  // one line under the list, may be empty
+
+// Puts a message on that line from outside. On MicroWriter this is where
+// anything the user needs to be told goes, since that build has no terminal
+// to print into -- see main.cpp's notify().
+void browserSetStatus(const char* text);
 
 // TITLE state: the text being typed, for the drawing code.
 const char* browserTitleBuffer();

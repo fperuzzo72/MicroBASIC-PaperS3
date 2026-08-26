@@ -19,6 +19,40 @@ left those pins high. See `docs/DEVELOPMENT_LOG.md`'s "The EPD rail was
 never powered" — the failure mode is worth knowing about, because every
 diagnostic said "success" the whole time.
 
+## Two machines, one codebase
+
+This repo builds **two firmwares**:
+
+| env | Machine |
+|---|---|
+| `m5papers3` | **MicroBASIC** — boots into the BASIC prompt, with the editor and browser alongside it |
+| `microwriter` | **MicroWriter** — boots into the file menu. A writing machine, no interpreter |
+
+MicroWriter is not MicroBASIC with the prompt hidden. The interpreter, the
+character-grid terminal it draws into, and the command dispatch built on top of
+them are excluded from that build, not compiled and ignored -- it comes out
+about 50KB smaller. What is left is the machine MicroBASIC grew out of.
+
+They share everything else, which is the point: a fix in the editor, the
+browser, WiFi or the file format reaches both without anyone having to
+remember to carry it. That is the same problem the manual habit in
+`docs/DEVELOPMENT_LOG.md` exists to manage between this repo and the X4, and
+here it is solved by construction instead.
+
+MicroWriter's menu carries **Sync over WiFi** and **Switch to the reader** as
+entries, which MicroBASIC does not need: it has a prompt, and typing `SYNC` or
+`READER` reaches the same place. KBD is deliberately not among them, since
+asking for the on-screen keyboard already means reaching for the screen.
+
+Both are flashed into the same `app1` slot, one at a time, so the device holds
+CrossPoint plus whichever was written last:
+
+```bash
+pio run -e microwriter
+python3 -m esptool --chip esp32s3 --port <port> --baud 921600 \
+    write_flash 0x6A0000 .pio/build/microwriter/firmware.bin
+```
+
 ## How it works
 
 ### Commands

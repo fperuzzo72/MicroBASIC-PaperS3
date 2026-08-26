@@ -345,6 +345,26 @@ place glyphs. If a future screen needs to know where a character will land,
 that is the measurement to use -- `getTextWidth()` answers a different
 question, and answers it correctly.
 
+## Two orderings that had to agree, written in separate places
+
+`drawScreen()` decides which screen is on the panel, and `loop()` decides
+which screen gets the keys. Both are if-else chains over the same conditions,
+and they must list them in the same order or keys go to a screen that is not
+the one being drawn. They were written months apart and disagreed: the WiFi
+wizard came first when drawing, the file browser came first when routing.
+
+Nothing noticed for as long as the two could not be open at once. MicroWriter
+broke that assumption on its first run -- the browser is that machine's home
+screen and is *always* active -- so the WiFi wizard drew correctly, took no
+keystrokes at all, and could not be escaped from. It looked like "Esc is
+broken in SYNC".
+
+Fixed by matching the order, with a comment on the routing chain saying it
+mirrors the drawing one. The general shape is worth remembering: when two
+pieces of code must enumerate the same cases in the same order, and nothing
+checks that they do, the bug waits for whichever future change first makes
+both cases reachable together.
+
 ## A modal that bypasses processAllInput() must dirty the screen itself
 
 Small, but the shape recurs. The READER confirmation routes keys in `loop()`

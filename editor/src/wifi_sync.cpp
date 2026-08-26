@@ -508,6 +508,7 @@ static void pollConnection() {
 // than hardcoding one path, so the two tabs share one implementation.
 struct Collection {
   const char* id;        // query-string value, and the URL prefix for downloads
+  const char* label;     // what the page's tab says
   const char* dir;       // where it lives on the SD card
   const char* listExt;   // only list files ending in this, or "" to list all
   const char* forceExt;  // extension forced on upload, or "" to accept as-is
@@ -515,15 +516,23 @@ struct Collection {
 };
 
 static const Collection COLLECTIONS[] = {
+#if MICROWRITER
+    // MicroWriter has no interpreter, so a .bas file it could offer would be
+    // one nothing on that machine can run. Notes only, and the page shows a
+    // single tab rather than a tab bar of one.
+    {"notes", "Notes", "/notes", ".txt", ".txt", TEXT_BUFFER_SIZE - 1},
+};
+#else
     // Notes stay filtered to .txt: the editor's save keeps one generation of
     // .bak alongside each note, and those are backups, not files to offer for
     // download or deletion.
-    {"notes", "/notes", ".txt", ".txt", TEXT_BUFFER_SIZE - 1},
+    {"notes", "Notes", "/notes", ".txt", ".txt", TEXT_BUFFER_SIZE - 1},
     // Programs are listed unfiltered and uploaded as-is: SAVE stores under
     // exactly the name typed, with no forced extension, so filtering here
     // would hide files the user just saved from the BASIC prompt.
-    {"programs", "/MicroBASIC/programs", "", "", PROGRAM_UPLOAD_MAX_SIZE - 1},
+    {"programs", "BASIC programs", "/MicroBASIC/programs", "", "", PROGRAM_UPLOAD_MAX_SIZE - 1},
 };
+#endif
 static constexpr int COLLECTION_COUNT = sizeof(COLLECTIONS) / sizeof(COLLECTIONS[0]);
 
 // Which collection the in-flight upload targets. Set once at
@@ -560,6 +569,24 @@ static void ensureCollectionDir(const Collection& coll) {
 // Which upload is in flight. Set at UPLOAD_FILE_START, read by the later
 // WRITE/END callbacks (which have no access to the request's query string).
 static bool uploading = false;
+
+// The page builds its tab bar from this rather than hardcoding one, so the
+// two firmwares cannot disagree about what is on offer: MicroWriter serves
+// notes only, and its page shows no tab bar at all.
+static void handleCollectionList() {
+  lastHttpActivityMs = millis();
+  String json = "[";
+  for (int i = 0; i < COLLECTION_COUNT; i++) {
+    if (i) json += ",";
+    json += "{\"id\":\"";
+    json += COLLECTIONS[i].id;
+    json += "\",\"label\":\"";
+    json += COLLECTIONS[i].label;
+    json += "\"}";
+  }
+  json += "]";
+  server->send(200, "application/json", json);
+}
 
 static void handleFileList() {
   lastHttpActivityMs = millis();
@@ -806,6 +833,7 @@ static void handleNotFound() {
 static void startHttpServer() {
   if (server) return;
   server = new WebServer(80);
+  server->on("/api/collections", HTTP_GET, handleCollectionList);
   server->on("/api/files", HTTP_GET, handleFileList);
   server->on("/", HTTP_GET, handleFilesPage);
   server->on("/files", HTTP_GET, handleFilesPageRedirect);

@@ -131,10 +131,10 @@ td.actions a, td.actions button { margin-left: 8px; }
 <body>
 <h1>MicroBASIC &mdash; Files</h1>
 
-<div class="tabs" id="tabs">
-  <button class="tab active" data-c="notes" onclick="selectTab('notes')">Notes</button>
-  <button class="tab" data-c="programs" onclick="selectTab('programs')">BASIC programs</button>
-</div>
+<!-- Filled from /api/collections at load, and left hidden when the device
+     serves only one -- a tab bar with a single tab is a control that cannot
+     do anything. See buildTabs(). -->
+<div class="tabs" id="tabs" style="display:none"></div>
 
 <div class="card">
   <div class="dropzone" id="dropzone">
@@ -187,6 +187,40 @@ const COLLECTIONS = {
   }
 };
 let current = 'notes';
+
+// Which collections exist is the device's answer, not this page's assumption:
+// MicroWriter has no interpreter and so serves notes only, while MicroBASIC
+// serves both. Asking means the page follows whichever firmware is running
+// without a second version of itself.
+async function buildTabs() {
+  let cols;
+  try {
+    const res = await fetch('/api/collections');
+    cols = await res.json();
+  } catch (e) {
+    cols = [{ id: 'notes', label: 'Notes' }];
+  }
+  if (!cols.length) cols = [{ id: 'notes', label: 'Notes' }];
+
+  current = cols[0].id;
+
+  const bar = document.getElementById('tabs');
+  if (cols.length < 2) {
+    bar.style.display = 'none';
+  } else {
+    bar.style.display = 'flex';
+    bar.innerHTML = '';
+    for (const c of cols) {
+      const btn = document.createElement('button');
+      btn.className = 'tab' + (c.id === current ? ' active' : '');
+      btn.dataset.c = c.id;
+      btn.textContent = c.label;
+      btn.onclick = () => selectTab(c.id);
+      bar.appendChild(btn);
+    }
+  }
+  selectTab(current);
+}
 
 function selectTab(c) {
   if (!COLLECTIONS[c]) return;
@@ -307,7 +341,7 @@ dropzone.addEventListener('drop', e => {
   if (file) uploadFile(file);
 });
 
-selectTab('notes');
+buildTabs();  // picks the first collection and calls selectTab itself
 </script>
 </body>
 </html>

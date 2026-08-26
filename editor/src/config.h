@@ -75,6 +75,12 @@ static constexpr size_t TEXT_BUFFER_SIZE = 16384;
 // Wrapped display lines the editor will track for one buffer.
 static constexpr int MAX_LINES = 1024;
 
+// Auto-save, carried over from the X4 unchanged. Saving writes to the card
+// and never touches the framebuffer, so neither of these causes a visible
+// e-ink refresh. The editor also saves on the way out.
+static constexpr unsigned long AUTO_SAVE_IDLE_MS = 10000;   // 10s after the last keystroke
+static constexpr unsigned long AUTO_SAVE_MAX_MS = 120000;   // and every 2min while still typing
+
 // Ported modules (file_manager.cpp, text_editor.cpp) log through these. This
 // build always has serial, so they map straight onto it -- the X4's
 // RELEASE_BUILD switch that could compile them out isn't carried over.

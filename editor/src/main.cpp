@@ -1,21 +1,19 @@
-// MicroBASIC-PaperS3 -- milestones 1-4: hardware bring-up, SCREEN fonts,
-// on-screen keyboard, screen editor + BASIC interpreter.
+// MicroBASIC-PaperS3 -- the firmware's entry point.
 //
-// Milestones 1-3 are done and confirmed on real hardware -- see the project
-// README and git log. This build ports the real screen editor
-// (screen_editor.cpp), the input/dead-key/line-editing logic
-// (input_handler.cpp) and the BASIC interpreter bridge (tb_bridge.cpp,
-// tb_runtime.cpp, editor/lib/TinyBasic) from MicroBASIC's own
-// port-staging/, replacing the typing-echo demo the on-screen keyboard was
-// previously wired to. The OSK's callback now feeds the real
-// enqueueKeyEvent() instead of a standalone demo buffer -- exactly the
-// swap osk.h's own top comment anticipated from the start.
+// Boots straight into the screen editor and BASIC interpreter. On top of that
+// there is a status bar (READER, EDITOR, SYNC, KBD, BLE), each button with a
+// typed equivalent so nothing needs touch, and three full-screen states that
+// take over the panel while they are up: the WiFi transfer wizard
+// (wifi_sync.cpp), the file browser and prose editor (file_browser.cpp), and
+// the READER dual-boot confirmation (ota_apps.cpp).
 //
-// Not ported yet, and deliberately out of scope for this pass: the main
-// menu, file browser, prose text editor, BLE keyboard host, WiFi sync. This
-// device currently boots straight into the screen editor with no menu to
-// return to -- see input_handler.cpp's TODO comments for exactly what's
-// stubbed and why.
+// This file owns the drawing and the panel geometry. The modules above own
+// their own state and key handling and know nothing about the renderer -- the
+// same split screen_editor.cpp already used, and the reason the X4's
+// ui_renderer.cpp never had to come across with text_editor.cpp and
+// file_manager.cpp.
+//
+// Still in port-staging/ and not ported: vc_browser.cpp.
 
 #include <Arduino.h>
 #include <FontCacheManager.h>
@@ -42,6 +40,8 @@
 #include "screen_editor.h"
 #include "tb_bridge.h"
 #include "file_browser.h"
+#include "text_editor.h"
+#include <Utf8.h>
 #include "ota_apps.h"
 #include "wifi_sync.h"
 #include <BleKeyboardHost.h>
@@ -477,9 +477,176 @@ static void drawPasswordEntry() {
   renderer.drawText(FONT_UI, 8, WIFI_UI_Y + 8 + lh + 8, dots[0] ? dots : "(type on the keyboard below)");
 }
 
+// Per-codepoint ADVANCE for text_editor's wrap pass. That module has no font
+// dependency of its own by design, so it asks the caller, which does.
+//
+// Measuring one character with getTextWidth() does NOT give this. That returns
+// the ink bounding box (maxX - minX in EpdFont::getTextDimensions), which for a
+// single glyph is narrower than its advance by the side bearings -- and for a
+// space, which has no ink at all, is essentially zero. Summing those
+// under-counts badly on prose, so a line overran the panel by a wide margin
+// before the wrap budget was reached.
+//
+// width("cc") - width("c") is the advance exactly: the second copy starts one
+// advance further along and contributes the same ink and bearings the first
+// did, so everything but the advance cancels. It gives the right answer for a
+// space too.
+//
+// Cached because text_editor re-wraps the whole buffer on every keystroke, and
+// this would otherwise be two text measurements per character per keystroke.
+static int utf8Encode(uint32_t cp, char* out) {
+  if (cp < 0x80) {
+    out[0] = (char)cp;
+    return 1;
+  }
+  if (cp < 0x800) {
+    out[0] = (char)(0xC0 | (cp >> 6));
+    out[1] = (char)(0x80 | (cp & 0x3F));
+    return 2;
+  }
+  if (cp < 0x10000) {
+    out[0] = (char)(0xE0 | (cp >> 12));
+    out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[2] = (char)(0x80 | (cp & 0x3F));
+    return 3;
+  }
+  out[0] = (char)(0xF0 | (cp >> 18));
+  out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+  out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+  out[3] = (char)(0x80 | (cp & 0x3F));
+  return 4;
+}
+
+static int measureAdvance(uint32_t cp) {
+  char one[5] = {0}, two[9] = {0};
+  const int n = utf8Encode(cp, one);
+  memcpy(two, one, n);
+  memcpy(two + n, one, n);
+  return renderer.getTextWidth(FONT_BODY, two) - renderer.getTextWidth(FONT_BODY, one);
+}
+
+static int editorGlyphWidth(uint32_t cp) {
+  // Printable ASCII is almost everything typed, and is measured once.
+  static int cache[95] = {0};  // 0x20..0x7E
+  if (cp >= 0x20 && cp <= 0x7E) {
+    int& slot = cache[cp - 0x20];
+    if (slot == 0) slot = measureAdvance(cp);
+    return slot;
+  }
+  return measureAdvance(cp);
+}
+
+// Width of a byte range, summed the same way the wrap pass counts and the same
+// way drawText actually advances. Not getTextWidth(): that is the ink box, so a
+// prefix ending in a space would measure short and put the caret, or the edge
+// of a selection highlight, in the wrong place.
+static int advanceWidth(const char* s, int nbytes) {
+  int w = 0;
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(s);
+  const unsigned char* end = p + nbytes;
+  while (p < end) {
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if (cp == 0) break;
+    w += editorGlyphWidth(cp);
+  }
+  return w;
+}
+
+// The prose editor. Draws the wrapped lines text_editor.cpp computed, from
+// its viewport, plus a caret. Geometry is pushed in every frame because the
+// band changes height when the on-screen keyboard is toggled.
+static void drawEditorUi() {
+  const int lh = renderer.getLineHeight(FONT_BODY);
+  const int margin = 8;
+  const int bandH = contentBandH();
+  const int visible = bandH / lh;
+
+  editorSetMaxLineWidthPx(WIFI_UI_W - 2 * margin);
+  editorSetVisibleLines(visible);
+  editorSetPageJumpLines(visible > 1 ? visible - 1 : 1);
+  editorRecalculateLines();
+
+  const char* buf = editorGetBuffer();
+  const int lineCount = editorGetLineCount();
+  const int top = editorGetViewportStart();
+  const int cursorLine = editorGetCursorLine();
+
+  for (int row = 0; row < visible && top + row < lineCount; row++) {
+    const int i = top + row;
+    const int start = editorGetLinePosition(i);
+    const int end = (i + 1 < lineCount) ? editorGetLinePosition(i + 1) : (int)editorGetLength();
+
+    char line[256];
+    int n = end - start;
+    if (n < 0) n = 0;
+    if (n > (int)sizeof(line) - 1) n = (int)sizeof(line) - 1;
+    memcpy(line, buf + start, n);
+    // Trim the newline the wrap kept, so it is not drawn as a glyph.
+    while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r')) n--;
+    line[n] = '\0';
+
+    const int y = WIFI_UI_Y + row * lh;
+    renderer.drawText(FONT_BODY, margin, y, line);
+
+    // Selection: fill the selected span black and redraw just that text in
+    // white on top, so it reads inverted like every other list on the device.
+    if (editorHasSelection()) {
+      const int selA = editorGetSelectionStart();
+      const int selB = editorGetSelectionEnd();
+      const int a = (selA > start) ? selA : start;          // clip to this line
+      const int b = (selB < start + n) ? selB : start + n;
+      if (b > a) {
+        const int preBytes = a - start;
+        const int selBytes = b - a;
+        const int x1 = margin + advanceWidth(line, preBytes);
+        const int w = advanceWidth(line + preBytes, selBytes);
+        renderer.fillRect(x1, y, w, lh, true);
+
+        char mid[256];
+        int mn = selBytes;
+        if (mn > (int)sizeof(mid) - 1) mn = (int)sizeof(mid) - 1;
+        memcpy(mid, line + preBytes, mn);
+        mid[mn] = '\0';
+        renderer.drawText(FONT_BODY, x1, y, mid, false);
+      }
+    }
+
+    // Caret: a vertical bar at the cursor's column within its own line.
+    if (i == cursorLine) {
+      int c = editorGetCursorCol();
+      if (c > n) c = n;
+      const int cx = margin + advanceWidth(line, c);
+      renderer.fillRect(cx, y, 2, lh, true);
+    }
+  }
+}
+
+// Naming a new file, or retitling an open one. A new file has no name until
+// this is confirmed, which is why it comes before the editor rather than
+// after -- see file_browser.h.
+static void drawTitleUi() {
+  const int lh = renderer.getLineHeight(FONT_UI);
+  renderer.drawText(FONT_UI, 8, WIFI_UI_Y + 8, "Title:");
+
+  char shown[MAX_TITLE_LEN + 2];
+  snprintf(shown, sizeof(shown), "%s_", browserTitleBuffer());
+  renderer.drawText(FONT_UI, 8, WIFI_UI_Y + 8 + lh + 8, shown);
+
+  renderer.drawText(FONT_SMALL, 8, WIFI_UI_Y + 8 + 2 * (lh + 8), "Enter to confirm, Esc to cancel");
+}
+
 // EDITOR screen. Same band and same inverted-highlight-bar idiom as the WiFi
 // network list, so the two navigate identically -- see file_browser.h.
 static void drawBrowserUi() {
+  if (getBrowserState() == BrowserState::EDIT) {
+    drawEditorUi();
+    return;
+  }
+  if (getBrowserState() == BrowserState::TITLE) {
+    drawTitleUi();
+    return;
+  }
+
   const int rowH = renderer.getLineHeight(FONT_SMALL) + 4;
   const int visibleRows = contentBandH() / rowH;
   const bool menu = getBrowserState() == BrowserState::MENU;
@@ -641,6 +808,13 @@ void startEditorFromCommand() {
 }
 
 // Declared in input_handler.h -- see its doc comment.
+void startVcFromCommand() {
+  if (isBrowserActive()) return;
+  if (!BleHid.isConnected()) g_oskVisible = true;
+  browserStartVc();
+}
+
+// Declared in input_handler.h -- see its doc comment.
 void startReaderSwitchFromCommand() {
   if (g_readerSubtype == 0) {
     screenEditorTermPrintLine("No sibling app in the other OTA slot.");
@@ -653,11 +827,14 @@ void startReaderSwitchFromCommand() {
 // Declared in input_handler.h -- see its doc comment.
 void startWifiSyncFromCommand() {
   if (isWifiSyncActive()) return;
-  // The wizard's network list uses the top band (see drawWifiUi()) and its
-  // password entry needs a keyboard -- shown for the whole session, not just
-  // while typing, so there's one consistent layout throughout rather than
-  // the screen jumping when password entry starts.
-  g_oskVisible = true;
+  // Same rule as the EDITOR screen: only open the keyboard when there is no
+  // other way to type. This used to be unconditional, because connecting to
+  // WiFi suspended BLE and would have stranded a BLE-only typist mid-flow --
+  // that suspension is gone (it was a workaround for a cause that turned out
+  // to be a full NVS partition, see docs/DEVELOPMENT_LOG.md), and with it the
+  // reason to force the keyboard. A connected keyboard now leaves the whole
+  // band to the network list, which grows into it (see contentBandH()).
+  if (!BleHid.isConnected()) g_oskVisible = true;
   wifiSyncStart();
 }
 
@@ -888,11 +1065,10 @@ static void bleKbdAutoPair() {
 // keyboard on demand without waiting for the current one to time out, and
 // gives an immediate, visible response to the tap.
 static void forceBlePairingNow() {
-  // First tap ever (or first since the WiFi flow suspended it): BLE isn't
-  // running yet, so there's nothing to disconnect or rescan -- just bring
-  // the stack up. loadBonds() inside begin() means a previously-paired
-  // keyboard still reconnects automatically once bleKbdAutoPair() (now
-  // running, since isRunning() is true from here on) sees it.
+  // BLE starts at boot, so this normally never fires. Kept as the recovery
+  // path: if the stack ever ends up down (a failed begin(), or a future
+  // caller tearing it down), the BLE button is what brings it back rather
+  // than a reboot.
   if (!BleHid.isRunning()) {
     BleHid.begin("MicroBASIC-PaperS3");
     g_bleIdleSinceMs = 0;
@@ -920,7 +1096,7 @@ void setup() {
   // Calling Serial.print* without begin() is a normal, harmless no-op, so
   // every other STEP()/Serial.printf() call below stays as-is rather than
   // being conditionally compiled out one by one.
-  Serial.println("\n=== MicroBASIC-PaperS3 bring-up ===");
+  Serial.println("\n=== MicroBASIC-PaperS3 ===");
   Serial.flush();
 #define STEP(msg) do { Serial.printf("[step] %s\n", msg); Serial.flush(); } while (0)
 
@@ -981,12 +1157,18 @@ STEP("UsbKbd.begin");
   UsbKbd.begin();
 
 STEP("BleHid.begin");
-  // Deliberately NOT started here. BLE now stays off until the BLE button is
-  // tapped (forceBlePairingNow() calls BleHid.begin() then) -- starting it
-  // unconditionally at boot meant it was also live (and scanning/reconnecting
-  // to a bonded keyboard) during every WiFi attempt, which is exactly the
-  // variable the WiFi-connect-failure investigation needs to rule out. See
-  // docs/DEVELOPMENT_LOG.md.
+  // Started at boot again, so a keyboard that was paired before is connected
+  // by the time anyone reaches for it. It was made tap-to-start while the
+  // WiFi-connect failure was still being chased, to take BLE out of the
+  // picture; the cause turned out to be a full NVS partition instead (see
+  // docs/DEVELOPMENT_LOG.md), so the restriction had nothing to do with it.
+  // loadBonds() inside begin() means poll() starts reconnecting to a saved
+  // bond immediately; bleKbdAutoPair() below drives first-time pairing.
+  BleHid.begin("MicroBASIC-PaperS3");
+
+STEP("editorInit");
+  editorInit();
+  editorSetGlyphWidthFn(editorGlyphWidth);
 
 STEP("ota_apps");
   // Registering the name is what turns "OTA Slot 1" into "MicroBASIC" in the
@@ -1032,11 +1214,9 @@ void loop() {
     printDiagnostics("beat");
   }
 
-  // Only drives scanning/reconnecting once BLE has actually been started
-  // (see setup()'s BleHid.begin() comment) -- a no-op the whole time nobody
-  // has tapped the BLE button yet.
-  if (BleHid.isRunning()) bleKbdAutoPair();
+  bleKbdAutoPair();
   wifiSyncLoop();  // no-op unless the WiFi setup screen is active
+  browserLoop();   // no-op unless the editor is open; drives auto-save
 
   // Runs any autoexec.bas basicSetup() found at startup. Deliberately here,
   // not in setup() -- see tb_bridge.h's own comment: a launcher-style

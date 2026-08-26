@@ -9,28 +9,29 @@ with its own history. The X4 is the full version: it started life as a copy
 of the MicroWriter firmware and carries, alongside BASIC, the prose editor,
 WiFi sync, a BLE keyboard, a file browser, and the VC picker.
 
-This port doesn't have those parts yet — that's because it's a port in
-progress, not because they're out of scope by design. They're expected to
-land here eventually (the on-screen keyboard already has a working BLE
-keyboard alongside it, ported ahead of the rest). That means the shared
-surface below is going to grow, not stay stable, and the habit of carrying
-a fix to both sides matters more over time, not less: `text_editor`,
-`file_manager`, and `ui_renderer` will all join it as the port advances,
-each one adding another surface a fix has to cross.
+Almost all of it is here now: BASIC, the screen editor, the prose editor, the
+file browser, the BLE keyboard, and WiFi as file transfer. Two things stayed
+behind on purpose. `ui_renderer.cpp` is the X4's button-driven UI, replaced
+here by drawing written for touch, which was possible because `text_editor`
+and `file_manager` turned out to have no dependency on it at all. And the
+reading-progress sync inherited from MicroSlate is not something this project
+wants.
 
 The two repositories stay separate regardless of how much of the surface
 ends up shared — one tree serving both a touch panel with an on-screen
 keyboard and a button panel with a BLE keyboard would turn into conditional
-logic on top of conditional logic. When the text editor itself gets ported,
-it'll bring undo, `.bak` discard, and `ascii_fold` along with it — already
-done and confirmed on X4 hardware.
+logic on top of conditional logic.
 
-The four areas that are shared code today:
+The shared code, which grew as the port advanced — every row is a surface a
+fix has to cross:
 
 | Area | What it is |
 |---|---|
 | `research/fonts/tools/` | font pipeline: resizing, stem-width capping, header emission |
 | `editor/src/screen_editor.*` | the character grid, line wrapping, logical lines |
+| `editor/src/text_editor.*` | the prose buffer: cursor, selection, clipboard, one-level undo, pixel-budget wrap |
+| `editor/src/file_manager.*` | the two collections, listing, titles, save with `.tmp`/`.bak` rotation |
+| `editor/src/dead_keys.h`, `ascii_fold.h` | US-International composition, filename folding |
 | `editor/src/tb_*` | interpreter integration and the runtime contract |
 | `patches/tinybasic/` | the patch set over upstream |
 
@@ -282,6 +283,39 @@ write instead of two. Left as `NEW`, the first reset before the app marks
 itself valid (neither app calls `esp_ota_mark_app_valid_cancel_rollback()`)
 rolls silently back to the other slot, which presents as waking from sleep in
 the app you just left.
+
+## Ink box is not advance: the same measurement bug, twice
+
+`GfxRenderer::getTextWidth()` returns `maxX - minX` from
+`EpdFont::getTextDimensions()` -- the **ink bounding box**, not the sum of
+advances. For a whole sentence the difference is a few pixels of side bearing
+and nothing notices. For a single glyph it is the whole side bearing, and for
+a **space**, which has no ink at all, it is essentially zero.
+
+That bit the prose editor twice, in two places that both looked like unrelated
+layout bugs:
+
+* **Word wrap.** `text_editor.cpp` asks the caller for a per-codepoint width
+  and wraps against a pixel budget. Feeding it `getTextWidth()` of one
+  character under-counted every character and counted spaces as free, so a
+  line ran well past the panel before the budget was reached. On a prose line,
+  where one character in six is a space, the error is large.
+* **Caret and selection.** Positioning them by `getTextWidth()` of the prefix
+  has the same flaw: a prefix ending in a space measures short, so the caret
+  and the edges of the selection highlight land left of the text.
+
+The fix for both is to measure the **advance**, which is
+`width("cc") - width("c")`: the second copy starts exactly one advance further
+along and contributes the same ink and bearings the first did, so everything
+except the advance cancels. It gives the right answer for a space too. Cached
+per codepoint, because the wrap pass re-measures the whole buffer on every
+keystroke.
+
+Wrapping and drawing now agree by construction: the wrap budget, the caret,
+and the selection edges all sum the same advances that `drawText()` uses to
+place glyphs. If a future screen needs to know where a character will land,
+that is the measurement to use -- `getTextWidth()` answers a different
+question, and answers it correctly.
 
 ## A modal that bypasses processAllInput() must dirty the screen itself
 

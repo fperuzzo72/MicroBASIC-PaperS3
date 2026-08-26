@@ -24,12 +24,21 @@
 // the WiFi network list established: Up/Down move, Enter chooses, Esc backs
 // out one level (list -> menu -> closed).
 //
-// The two "New" entries, and opening a note, need the editor screen, which is
-// not ported yet -- they say so rather than doing nothing.
+// Choosing a file opens it in the editor, both collections alike, which is
+// what the X4 does: the browser is how you reach the editor, and LOAD is what
+// you type at the BASIC prompt when you want the interpreter to have it.
+//
+// A new file has no filename until it has a title -- file_manager's
+// saveCurrentFile() refuses an empty one on purpose -- so the two "New"
+// entries go through TITLE before EDIT, and the name is derived from what is
+// typed there (deriveUniqueFilename). Retitling an existing file renames it
+// on disk to match.
 
 enum class BrowserState {
-  MENU,  // the four entries
-  LIST,  // files in the chosen collection
+  MENU,   // the four entries
+  LIST,   // files in the chosen collection
+  EDIT,   // the prose editor, on the file loaded into text_editor.cpp
+  TITLE,  // naming a new file, or retitling an open one
 };
 
 // How many entries the menu has, and what they say. Kept here rather than in
@@ -38,11 +47,29 @@ constexpr int BROWSER_MENU_COUNT = 4;
 const char* browserMenuLabel(int index);
 
 void browserStart();  // opens at MENU; no-op if already open
+
+// VC: opens straight into the programs list, and Enter there hands the file to
+// the interpreter (LOAD) instead of the editor, returning to the terminal.
+// Typed-only, like on the X4 -- it is a shortcut for loading a program, not a
+// second way into the editor, so it does not get a status-bar button.
+//
+// The X4 draws this as a multi-column Volkov-Commander-style picker of its
+// own (vc_browser.cpp plus ui_renderer.cpp's drawVcBrowser). That is not
+// ported: it would mean a second list renderer to maintain beside this one,
+// for a difference in looks rather than in what it does. The list here is
+// the same one the browser already uses.
+void browserStartVc();
 void browserStop();
 bool isBrowserActive();
 
 BrowserState getBrowserState();
 int getBrowserSelection();       // index into the menu, or into the file list
 const char* browserStatusText();  // one line under the list, may be empty
+
+// TITLE state: the text being typed, for the drawing code.
+const char* browserTitleBuffer();
+
+// Drives auto-save; call every loop. Does nothing outside EDIT.
+void browserLoop();
 
 void browserHandleKey(uint8_t keyCode, uint8_t modifiers);

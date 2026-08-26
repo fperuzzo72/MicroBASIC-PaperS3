@@ -97,11 +97,10 @@ char hidToAscii(uint8_t hid, uint8_t modifiers) {
 
 // --- Screen editor: the only "screen" this build has --------------------
 //
-// executeLogicalLine()/handleScreenEditorKey() are ported from
-// input_handler.cpp almost unchanged; MENU/EXIT and VC are commented out
-// rather than wired to a menu/vc_browser.h that doesn't exist yet in this
-// port. Typing those words does whatever the interpreter itself does with
-// an unrecognized statement (a syntax error) until they're ported.
+// executeLogicalLine()/handleScreenEditorKey() are ported from the X4's
+// input_handler.cpp almost unchanged. MENU/EXIT are deliberately absent:
+// the X4 needed a menu because it had nowhere else to put navigation, and
+// here the status bar covers all of it.
 
 static void executeLogicalLine(const char* line) {
   const char* p = line;
@@ -127,11 +126,6 @@ static void executeLogicalLine(const char* line) {
     return arg;  // may point at '\0' if no argument was given
   };
 
-  // TODO(menu): MENU/EXIT return to the main menu on the X4 -- no menu
-  // exists yet in this port.
-  // TODO(vc_browser): VC opens the full-screen program picker on the X4 --
-  // vc_browser.h isn't ported yet.
-
   if (isWord("SYNC")) {
     // Same entry point as tapping the status bar's SYNC button -- lets
     // someone start the WiFi transfer flow without touching the screen.
@@ -144,6 +138,13 @@ static void executeLogicalLine(const char* line) {
     // all -- typing it is not treated as its own confirmation.
     screenEditorStartNewInputLine();
     startReaderSwitchFromCommand();
+    return;
+  }
+  if (isWord("VC")) {
+    // The typed "VC" is left on screen on purpose, so the "Loaded ..." line
+    // that follows has something to attach to.
+    screenEditorStartNewInputLine();
+    startVcFromCommand();
     return;
   }
   if (isWord("EDITOR")) {
@@ -190,11 +191,11 @@ static void executeLogicalLine(const char* line) {
 }
 
 static void handleScreenEditorKey(uint8_t keyCode, uint8_t modifiers) {
-  // TODO(menu): Escape returns to the main menu on the X4 -- no menu exists
-  // yet in this port, so it's a no-op here (falls through: not a navigation
-  // key below, and hidToAscii() returns 0 for it, so nothing is inserted
-  // either). A running program's own Escape-to-break still works --  that
-  // path is pumpProgramInput()'s, not this one.
+  // Escape returned to the main menu on the X4. There is no menu here (see
+  // above), so it falls through as a no-op: it is not a navigation key below,
+  // and hidToAscii() returns 0 for it, so nothing is inserted either. A
+  // running program's own Escape-to-break still works -- that is
+  // pumpProgramInput()'s path, not this one.
 
   switch (keyCode) {
     case HID_KEY_LEFT:      screenEditorMoveCursor(0, -1);  screenDirty = true; return;

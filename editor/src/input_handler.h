@@ -52,6 +52,10 @@ void startReaderSwitchFromCommand();
 // is forced visible for the same reason SYNC does it.
 void startEditorFromCommand();
 
+// VC: the programs list with LOAD on Enter (file_browser.h's browserStartVc).
+// Typed-only, no status-bar button.
+void startVcFromCommand();
+
 // Drains the whole input queue looking for a pending break request --
 // Escape or Ctrl+C -- discarding everything else along the way. Read by the
 // runtime's checkch() (tb_runtime.cpp), which the interpreter polls after

@@ -33,10 +33,15 @@ reaches the interpreter (`editor/src/input_handler.cpp`):
 | `FILES`, `DIR` | aliases for `CATALOG` — list `/MicroBASIC/programs` |
 | `SYNC` | opens the WiFi file-transfer wizard, same as tapping the "SYNC" status button |
 | `EDITOR` | opens the file browser, same as tapping the "EDITOR" status button |
+| `VC` | the programs list, but Enter hands the file to `LOAD` instead of the editor |
 | `READER` | reboots into the CrossPoint reader, same as tapping "READER" |
 
 Every status-bar button that does something has a typed equivalent, so the
-device is fully operable without touching the screen.
+device is fully operable without touching the screen. `VC` is typed-only: it
+is a shortcut for loading a program, not a second way into the editor, so it
+gets no button. (On the X4 it is drawn as a multi-column Volkov-Commander-style
+picker of its own. Here it reuses the browser's list, which does the same job
+without a second list renderer to keep alive.)
 
 ### EDITOR, the file browser
 
@@ -59,9 +64,24 @@ collections are listed differently on purpose. Programs show the real
 be what LOAD takes; notes show a **title**, with the filename an
 implementation detail, which is MicroWriter's behaviour.
 
-The prose editor itself is not ported yet, so today choosing a program hands
-it straight to the interpreter (`LOAD "name"`). Creating files, and opening a
-note, say so rather than appearing to work.
+Choosing a file opens it in the prose editor, both collections alike, which is
+what the X4 does: the browser is how you reach the editor, and `LOAD` is what
+you type at the BASIC prompt when you want the interpreter to have it. A
+program written in the editor is `LOAD`able, and one typed at the prompt is
+editable, because both live in the same folder.
+
+A new file goes through a title screen before the editor, since a file with no
+name cannot be saved and typing first would mean typing into something no
+auto-save could rescue. The filename is derived from the title; retitling an
+existing file renames it on disk. Notes get `.txt`, programs `.bas`.
+
+The editor has arrow keys and Shift+arrows to select, Backspace/Delete,
+Ctrl+C/X/V, Ctrl+A, Ctrl+Z (one level, block operations only -- see
+`text_editor.h` for why typing deliberately discards it), and Ctrl+S. It saves
+after 10s idle, every 2min while typing without pause, and on the way out.
+Saving writes to the card and never touches the framebuffer, so none of those
+causes an e-ink refresh. US-International dead keys work exactly as in the
+terminal.
 
 Everything else — `PRINT`, `LET`, `INPUT`, `IF`/`THEN`, `FOR`/`NEXT`,
 `GOSUB`/`RETURN`, `DIM`, `READ`/`DATA`, `LOAD`, `SAVE`, `CATALOG`, `DELETE`,
@@ -80,14 +100,12 @@ keystroke came from.
 
 **On-screen.** Always available; the "KBD" status button (top right)
 shows/hides it. Full US-International layout with dead-key composition.
-Forced visible for the whole WiFi wizard (see SYNC below), even if a BLE
-keyboard is connected, so losing BLE mid-flow never strands the wizard with
-no way to type.
+Opened automatically by the EDITOR screen only when no BLE keyboard is
+connected, since both of its lists are arrow-driven. The KBD button still
+toggles it either way, and a list grows into the space when it is hidden.
 
-**BLE.** Starts only when the "BLE" status button is tapped — not
-automatically at boot. (This is deliberate, not an oversight: starting BLE
-unconditionally at boot meant it was also live during every WiFi connect
-attempt, which is its own problem — see below.) Once started:
+**BLE.** Starts at boot, so a keyboard paired earlier is already connected by
+the time you reach for it. It:
 
 - Auto-pairs with the first HID-advertising keyboard it finds (no pairing
   picker UI exists yet — one device at a time).
@@ -105,18 +123,28 @@ attempt, which is its own problem — see below.) Once started:
   terminal — the interpreter always generates `123456`, so it's really just
   a confirmation prompt, not a real per-device code.
 
-**BLE and WiFi can't both be radio-active at the same time** (a documented
-ESP32-S3 coexistence limitation, not a bug in either): connecting to WiFi
-suspends BLE entirely for the ~1-25 seconds the connection attempt takes,
-then resumes it automatically once that concludes (success, timeout, or
-cancel). The keyboard reconnects on its own; nothing needs to be re-paired.
+**BLE stays connected across a WiFi connect.** For a while it did not: the
+code tore the BLE stack down for the duration, on the theory that the
+documented ESP32-S3 WiFi/BLE coexistence errata was what stopped this device
+from ever associating. That turned out to be wrong. The real cause was a full
+NVS partition making the WiFi radio's own PHY calibration write fail, and the
+suspend/resume never fixed anything. It was removed once the partition was
+resized.
 
 ### SYNC — WiFi file transfer
 
 Reached by tapping the "SYNC" status button or typing `SYNC`. No
 sync/reading-progress feature (that's the X4/MicroSlate-inherited part this
 port deliberately doesn't carry over) — just a network picker, a password
-entry, and a small HTTP file server.
+entry, and a small HTTP file server. Like the EDITOR screen, it opens the
+on-screen keyboard only when no BLE keyboard is connected.
+
+The page serves **both** folders as tabs, with the rules each one needs: notes
+are filtered to `.txt`, because the editor keeps one generation of `.bak`
+beside each note and those are backups rather than files to offer for download
+or deletion; programs are listed unfiltered and uploaded under exactly the name
+given, because `SAVE` forces no extension and filtering would hide what you
+just saved at the prompt.
 
 1. **Scanning** — lists nearby networks, `[saved]` marks ones with a stored
    password, `(locked)` marks ones that need one.
@@ -131,8 +159,8 @@ entry, and a small HTTP file server.
 6. **Syncing** — the status line shows a URL:
    `http://<device-ip>/` (the mDNS name `microbasic-papers3.local` may also
    work, depending on the network/OS). Open that on a computer on the same
-   network: a drag-and-drop page for uploading/downloading `.bas` programs
-   against `/MicroBASIC/programs`.
+   network: a drag-and-drop page for uploading and downloading, with a tab per
+   collection.
 7. Esc at any point (or leaving the SYNC screen) tears the WiFi connection
    and the HTTP server down cleanly.
 

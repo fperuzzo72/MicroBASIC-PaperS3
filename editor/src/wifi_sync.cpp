@@ -34,7 +34,6 @@
 #include <SDCardManager.h>
 #include <Preferences.h>
 #include <esp_heap_caps.h>
-#include <BleKeyboardHost.h>
 
 // --- Internal state ---
 static WebServer* server = nullptr;
@@ -392,35 +391,18 @@ static void processScanResults() {
 // Connection
 // =========================================================================
 
-// Confirmed on hardware, and matches a documented ESP32-S3 errata: the STA
-// connect handshake fails outright -- "wifi:Coexist: Wi-Fi connect fail,
-// apply reconnect coex policy" -- whenever a BLE connection is live at the
-// same time, active traffic or not (a merely-idle bonded link was enough
-// to reproduce it here). NimBLE.end() fully tears the BLE stack down for
-// the duration of the connect attempt; poll()'s own auto-reconnect brings
-// the keyboard back once WiFi.begin() has actually connected or given up
-// (see pollConnection()'s two exit paths below). The on-screen keyboard
-// stays available throughout regardless (forced visible for the whole
-// WiFi session -- see main.cpp's SYNC tap handler), so this brief gap
-// never leaves the wizard with no way to type.
-// BLE now only starts on the status bar's BLE button (see main.cpp's
-// forceBlePairingNow()), not automatically at boot -- so a WiFi attempt made
-// before anyone has tapped it must not itself bring the stack up for the
-// first time. This remembers whether BLE was actually running at the moment
-// it got suspended, and only that state gets restored.
-static bool g_bleWasRunningBeforeSuspend = false;
-
-static void suspendBleForWifiConnect() {
-  g_bleWasRunningBeforeSuspend = BleHid.isRunning();
-  if (g_bleWasRunningBeforeSuspend) BleHid.end();
-}
-
-static void resumeBleAfterWifiConnect() {
-  if (g_bleWasRunningBeforeSuspend && !BleHid.isRunning()) {
-    BleHid.begin("MicroBASIC-PaperS3");
-  }
-}
-
+// BLE is deliberately left running across a WiFi connect.
+//
+// This code used to tear the BLE stack down for the duration of the attempt,
+// on the theory that the documented ESP32-S3 WiFi/BLE coexistence errata was
+// what stopped this device from ever associating. It was not: the real cause
+// was a full NVS partition, which made the WiFi radio's own PHY calibration
+// write fail (see docs/DEVELOPMENT_LOG.md's "WiFi never actually connected").
+// The suspend/resume was added before that was known and never actually fixed
+// anything, so it was removed once the partition was resized -- keeping a
+// workaround for a cause that turned out to be something else costs a
+// disconnected keyboard in the middle of the one screen most likely to need
+// one.
 static void beginConnect(const char* ssid, const char* pass) {
   strncpy(connectingSSID, ssid, 32);
   connectingSSID[32] = '\0';
@@ -428,7 +410,6 @@ static void beginConnect(const char* ssid, const char* pass) {
   snprintf(statusText, sizeof(statusText), "Connecting to %s...", ssid);
   connectStartMs = millis();
 
-  suspendBleForWifiConnect();
   WiFi.disconnect(true);
   delay(50);
   WiFi.begin(ssid, pass);
@@ -486,7 +467,6 @@ static bool promptStillSettling() {
 
 static void pollConnection() {
   if (WiFi.status() == WL_CONNECTED) {
-    resumeBleAfterWifiConnect();
     if (!usedSavedPassword) {
       snprintf(statusText, sizeof(statusText), "%s", WiFi.localIP().toString().c_str());
       openPrompt(SyncState::SAVE_PROMPT);
@@ -498,7 +478,6 @@ static void pollConnection() {
 
   if (millis() - connectStartMs > 25000) {
     WiFi.disconnect(true);
-    resumeBleAfterWifiConnect();
     strcpy(statusText, "Connection failed");
 
     if (usedSavedPassword) {
@@ -515,7 +494,60 @@ static void pollConnection() {
 // HTTP Server
 // =========================================================================
 
-static constexpr char PROGRAMS_DIR[] = "/MicroBASIC/programs";  // matches tb_runtime.cpp's TB_DIR
+// --- Collections ----------------------------------------------------------
+// The browser file manager serves both directories as tabs. Everything below
+// (list, download, upload, delete) is written against this descriptor rather
+// than hardcoding one path, so the two tabs share one implementation.
+struct Collection {
+  const char* id;        // query-string value, and the URL prefix for downloads
+  const char* dir;       // where it lives on the SD card
+  const char* listExt;   // only list files ending in this, or "" to list all
+  const char* forceExt;  // extension forced on upload, or "" to accept as-is
+  size_t maxFileSize;    // reject uploads bigger than what the device can load
+};
+
+static const Collection COLLECTIONS[] = {
+    // Notes stay filtered to .txt: the editor's save keeps one generation of
+    // .bak alongside each note, and those are backups, not files to offer for
+    // download or deletion.
+    {"notes", "/notes", ".txt", ".txt", TEXT_BUFFER_SIZE - 1},
+    // Programs are listed unfiltered and uploaded as-is: SAVE stores under
+    // exactly the name typed, with no forced extension, so filtering here
+    // would hide files the user just saved from the BASIC prompt.
+    {"programs", "/MicroBASIC/programs", "", "", PROGRAM_UPLOAD_MAX_SIZE - 1},
+};
+static constexpr int COLLECTION_COUNT = sizeof(COLLECTIONS) / sizeof(COLLECTIONS[0]);
+
+// Which collection the in-flight upload targets. Set once at
+// UPLOAD_FILE_START and read by the later WRITE callbacks, which have no
+// access to the request's query string.
+static const Collection* uploadColl = nullptr;
+
+// Defaults to the first collection when absent or unrecognised.
+static const Collection& collectionFromArg() {
+  if (server->hasArg("c")) {
+    String want = server->arg("c");
+    for (int i = 0; i < COLLECTION_COUNT; i++) {
+      if (want == COLLECTIONS[i].id) return COLLECTIONS[i];
+    }
+  }
+  return COLLECTIONS[0];
+}
+
+// Create a collection's directory (and any parent) on demand.
+static void ensureCollectionDir(const Collection& coll) {
+  const char* slash = strrchr(coll.dir + 1, '/');
+  if (slash) {
+    char parent[128];
+    const size_t n = (size_t)(slash - coll.dir);
+    if (n < sizeof(parent)) {
+      memcpy(parent, coll.dir, n);
+      parent[n] = '\0';
+      if (!SdMan.exists(parent)) SdMan.mkdir(parent);
+    }
+  }
+  if (!SdMan.exists(coll.dir)) SdMan.mkdir(coll.dir);
+}
 
 // Which upload is in flight. Set at UPLOAD_FILE_START, read by the later
 // WRITE/END callbacks (which have no access to the request's query string).
@@ -528,7 +560,9 @@ static void handleFileList() {
     screenDirty = true;
   }
 
-  auto dir = SdMan.open(PROGRAMS_DIR);
+  const Collection& coll = collectionFromArg();
+
+  auto dir = SdMan.open(coll.dir);
   if (!dir || !dir.isDirectory()) {
     if (dir) dir.close();
     // An absent directory is normal (nothing saved yet), not an error.
@@ -545,6 +579,17 @@ static void handleFileList() {
     file.getName(name, sizeof(name));
     if (name[0] == '.' || file.isDirectory()) { file.close(); continue; }
 
+    // Honour the collection's filter, so a note's .bak sibling never shows up
+    // as something to download or delete.
+    const size_t extLen = strlen(coll.listExt);
+    if (extLen > 0) {
+      const size_t nameLen = strlen(name);
+      if (nameLen <= extLen || strcasecmp(name + nameLen - extLen, coll.listExt) != 0) {
+        file.close();
+        continue;
+      }
+    }
+
     if (!first) json += ",";
     first = false;
     json += "{\"name\":\"";
@@ -560,23 +605,33 @@ static void handleFileList() {
   server->send(200, "application/json", json);
 }
 
-// Serves /programs/<filename>. Returns false if the URI isn't shaped like
-// that (falls through to a plain 404 in handleNotFound()).
+// Serves /<collection-id>/<filename> for any collection, e.g. /notes/x.txt or
+// /programs/HELLO. Returns false if the URI doesn't name one (falls through to
+// a plain 404 in handleNotFound()).
 static bool handleFileDownload() {
   lastHttpActivityMs = millis();
 
   String uri = server->uri();
-  static constexpr char kPrefix[] = "/programs/";
-  if (!uri.startsWith(kPrefix) || uri.length() <= strlen(kPrefix)) return false;
+  const Collection* coll = nullptr;
+  size_t prefixLen = 0;
+  for (int i = 0; i < COLLECTION_COUNT; i++) {
+    String prefix = String("/") + COLLECTIONS[i].id + "/";
+    if (uri.startsWith(prefix) && uri.length() > prefix.length()) {
+      coll = &COLLECTIONS[i];
+      prefixLen = prefix.length();
+      break;
+    }
+  }
+  if (!coll) return false;
 
-  String filename = uri.substring(strlen(kPrefix));
+  String filename = uri.substring(prefixLen);
   if (filename.indexOf("..") >= 0 || filename.indexOf('/') >= 0) {
     server->send(400, "text/plain", "Invalid name");
     return true;
   }
 
   char path[320];
-  snprintf(path, sizeof(path), "%s/%s", PROGRAMS_DIR, filename.c_str());
+  snprintf(path, sizeof(path), "%s/%s", coll->dir, filename.c_str());
 
   auto file = SdMan.open(path, O_RDONLY);
   if (!file) {
@@ -642,19 +697,24 @@ static void handleUploadData() {
     if (!pcConnected) { pcConnected = true; screenDirty = true; }
     uploading = true;
 
-    // Filename only (no path), clamped length. No forced extension --
-    // programs are stored under exactly the name given, matching SAVE
-    // (see screen_editor.h / tb_runtime.cpp's tbPath()).
+    // Read the collection here and remember it: the WRITE/END callbacks that
+    // follow have no access to the request's query string.
+    const Collection& coll = collectionFromArg();
+    uploadColl = &coll;
+
+    // Filename only (no path), clamped length. Programs take the name as
+    // given, matching SAVE (see tb_runtime.cpp's tbPath()); notes get .txt
+    // forced on, since the editor owns their filenames.
     String filename = up.filename;
     int slash = filename.lastIndexOf('/');
     if (slash >= 0) filename = filename.substring(slash + 1);
     if (filename.length() == 0) filename = "upload";
+    if (coll.forceExt[0] != '\0' && !filename.endsWith(coll.forceExt)) filename += coll.forceExt;
     if ((int)filename.length() > MAX_FILENAME_LEN - 1) filename = filename.substring(0, MAX_FILENAME_LEN - 1);
 
-    if (!SdMan.exists("/MicroBASIC")) SdMan.mkdir("/MicroBASIC");
-    if (!SdMan.exists(PROGRAMS_DIR)) SdMan.mkdir(PROGRAMS_DIR);
+    ensureCollectionDir(coll);
 
-    snprintf(upload_.path, sizeof(upload_.path), "%s/%s", PROGRAMS_DIR, filename.c_str());
+    snprintf(upload_.path, sizeof(upload_.path), "%s/%s", coll.dir, filename.c_str());
     upload_.file = SdMan.open(upload_.path, O_WRONLY | O_CREAT | O_TRUNC);
     upload_.bytesWritten = 0;
     upload_.tooLarge = false;
@@ -663,7 +723,8 @@ static void handleUploadData() {
 
   } else if (up.status == UPLOAD_FILE_WRITE) {
     if (!upload_.ok) return;
-    if (upload_.bytesWritten + up.currentSize > PROGRAM_UPLOAD_MAX_SIZE - 1) {
+    const size_t cap = uploadColl ? uploadColl->maxFileSize : PROGRAM_UPLOAD_MAX_SIZE - 1;
+    if (upload_.bytesWritten + up.currentSize > cap) {
       upload_.ok = false;
       upload_.tooLarge = true;
       upload_.file.close();
@@ -696,7 +757,8 @@ static void handleUploadDone() {
     server->send(200, "text/plain", "OK");
   } else if (upload_.tooLarge) {
     char msg[64];
-    snprintf(msg, sizeof(msg), "File too large (%uKB max)", (unsigned)((PROGRAM_UPLOAD_MAX_SIZE) / 1024));
+    const size_t cap = uploadColl ? uploadColl->maxFileSize : PROGRAM_UPLOAD_MAX_SIZE - 1;
+    snprintf(msg, sizeof(msg), "File too large (%uKB max)", (unsigned)(cap / 1024));
     server->send(400, "text/plain", msg);
   } else {
     server->send(400, "text/plain", "Upload failed");
@@ -715,8 +777,9 @@ static void handleDeleteFile() {
     server->send(400, "text/plain", "Invalid name");
     return;
   }
+  const Collection& coll = collectionFromArg();
   char path[320];
-  snprintf(path, sizeof(path), "%s/%s", PROGRAMS_DIR, name.c_str());
+  snprintf(path, sizeof(path), "%s/%s", coll.dir, name.c_str());
   if (!SdMan.exists(path)) {
     server->send(404, "text/plain", "Not found");
     return;
@@ -822,7 +885,6 @@ void syncHandleKey(uint8_t keyCode, uint8_t modifiers) {
     case SyncState::CONNECTING:
       if (keyCode == HID_KEY_ESCAPE) {
         WiFi.disconnect(true);
-        resumeBleAfterWifiConnect();
         if (autoConnectAttempted) {
           beginScan();
         } else {
@@ -901,12 +963,6 @@ void wifiSyncStop() {
   stopHttpServer();
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
-  // Safety net: every path that suspends BLE for a connect attempt also
-  // resumes it on its own way out, but wifiSyncStop() can be reached from
-  // states that never suspended it at all (e.g. Escape from NETWORK_LIST)
-  // as well as ones that did -- isRunning() makes this a no-op in the
-  // former case rather than needing every caller to track which is which.
-  resumeBleAfterWifiConnect();
 
   wifiPrefs.end();
   syncActive = false;

@@ -582,6 +582,16 @@ static bool tapInRect(int x, int y, int rx, int ry, int rw, int rh) {
 }
 
 // Declared in input_handler.h -- see its doc comment.
+void startReaderSwitchFromCommand() {
+  if (g_readerSubtype == 0) {
+    screenEditorTermPrintLine("No sibling app in the other OTA slot.");
+    return;
+  }
+  g_readerConfirm = true;
+  screenDirty = true;
+}
+
+// Declared in input_handler.h -- see its doc comment.
 void startWifiSyncFromCommand() {
   if (isWifiSyncActive()) return;
   // The wizard's network list uses the top band (see drawWifiUi()) and its

@@ -139,6 +139,13 @@ static void executeLogicalLine(const char* line) {
     startWifiSyncFromCommand();
     return;
   }
+  if (isWord("READER")) {
+    // Same entry point as the status bar's READER button, confirmation and
+    // all -- typing it is not treated as its own confirmation.
+    screenEditorStartNewInputLine();
+    startReaderSwitchFromCommand();
+    return;
+  }
   if (isWord("FILES") || isWord("DIR")) {
     // Aliases: the interpreter calls its directory listing CATALOG. FILES is
     // this project's own name, DIR the one anyone from CP/M or DOS reaches

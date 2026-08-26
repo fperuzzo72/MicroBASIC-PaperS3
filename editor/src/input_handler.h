@@ -40,6 +40,12 @@ bool dequeueKeyEventForCaller(uint8_t& keyCode, uint8_t& modifiers, bool& presse
 // entry point as the button. A no-op if the flow is already running.
 void startWifiSyncFromCommand();
 
+// Opens the READER confirmation, the same way tapping the status bar's READER
+// button does. Implemented in main.cpp, which owns the modal; called from
+// executeLogicalLine() so the dual-boot switch is reachable without touching
+// the screen, same as SYNC. A no-op if there is no sibling app to switch to.
+void startReaderSwitchFromCommand();
+
 // Drains the whole input queue looking for a pending break request --
 // Escape or Ctrl+C -- discarding everything else along the way. Read by the
 // runtime's checkch() (tb_runtime.cpp), which the interpreter polls after

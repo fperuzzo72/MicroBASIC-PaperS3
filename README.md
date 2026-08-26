@@ -92,6 +92,25 @@ patched in `patches/tinybasic/`). For the full language reference, see
 `CATALOG`/`DELETE` all operate on `/MicroBASIC/programs` on the SD card,
 created automatically at boot if missing.
 
+### File dates
+
+Files written to the card carry a real date and time, in **UTC**. The clock is
+the board's own RTC (BM8563), set from the network by SNTP the first time SYNC
+connects to WiFi -- nothing else on the device knows the time. Until that has
+happened once, files fall back to the firmware's build date: not the real time,
+but plausible, sortable, and never 1980.
+
+UTC is deliberate. A file timestamp is a reference, not a calendar appointment,
+and it avoids carrying a timezone setting and DST rules for something nothing
+here reads back.
+
+The RTC is not trusted just because it answers. `Rtc::now()` returning true
+only means the oscillator is running, and the dev board's never-set RTC reads
+back **2077** -- a year FAT stores happily. A wrong date that looks right is
+worse than no date, because nothing downstream can tell, so the time is used
+only if it is one this firmware could plausibly be running at (see
+`editor/src/sd_datetime.cpp`).
+
 ### Keyboard
 
 Two independent input paths, both feeding the same key queue — the editor,

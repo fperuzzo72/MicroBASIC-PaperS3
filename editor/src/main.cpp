@@ -38,6 +38,7 @@
 #include "input_handler.h"
 #include "osk.h"
 #include "screen_editor.h"
+#include "sd_datetime.h"
 #include "tb_bridge.h"
 #include "file_browser.h"
 #include "text_editor.h"
@@ -1165,6 +1166,10 @@ STEP("BleHid.begin");
   // loadBonds() inside begin() means poll() starts reconnecting to a saved
   // bond immediately; bleKbdAutoPair() below drives first-time pairing.
   BleHid.begin("MicroBASIC-PaperS3");
+
+STEP("sdDateTime");
+  // Before anything writes to the card, so no file is created dateless.
+  sdDateTimeSetup();
 
 STEP("editorInit");
   editorInit();

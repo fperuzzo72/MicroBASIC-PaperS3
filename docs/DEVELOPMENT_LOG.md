@@ -284,6 +284,34 @@ itself valid (neither app calls `esp_ota_mark_app_valid_cancel_rollback()`)
 rolls silently back to the other slot, which presents as waking from sleep in
 the app you just left.
 
+## A running clock is not a set clock
+
+Files written by this firmware had no date at all: SdFat only fills a
+directory entry's date fields when a callback is registered, and there was
+none, so FAT read the zeros as 1980. The fix is a callback
+(`editor/src/sd_datetime.cpp`) reading the board's RTC, with SNTP setting that
+RTC the first time SYNC reaches a network.
+
+The part worth remembering is what the first working version got wrong.
+`Rtc::now()` returns false when the oscillator has stopped, so treating a
+`true` as "the time is good" looks reasonable. It is not: the oscillator on
+this unit was running, and reading back **2077-01-03**. That year is inside
+the range FAT can represent, so every file would have been stamped with it,
+and nothing downstream -- not the browser, not a computer opening the card --
+could have told it was wrong. A plausible-looking wrong value is worse than an
+obviously missing one, which is exactly why the old behaviour (1980, or the
+1 Jan 2026 the card showed) was easier to notice than 2077 would have been.
+
+Now the time is used only if it is one this firmware could be running at: not
+before its own build date, since the firmware cannot predate itself, and not
+decades ahead. When the RTC fails that test the log says so by name, rather
+than silently falling back.
+
+Same shape as the measurement bug below: the API answered a narrower question
+than the one being asked of it. "Is the oscillator running" is not "is this
+the time", just as "how wide is this glyph's ink" is not "how far does the
+cursor move".
+
 ## Ink box is not advance: the same measurement bug, twice
 
 `GfxRenderer::getTextWidth()` returns `maxX - minX` from

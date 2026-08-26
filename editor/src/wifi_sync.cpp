@@ -24,6 +24,7 @@
 #include "wifi_sync.h"
 #include "config.h"
 #include "sd_backup.h"
+#include "sd_datetime.h"
 #include "web_files_page.h"
 #include "input_handler.h"
 
@@ -418,6 +419,13 @@ static void beginConnect(const char* ssid, const char* pass) {
 }
 
 static void enterSyncingState() {
+  // Being online is the only chance this device gets to learn the time, so
+  // take it here rather than behind a menu nobody would think to open. Files
+  // written from now on carry a real date. Failure is silent by design: the
+  // build-date fallback stays, and a file transfer is not worth blocking over
+  // a clock.
+  if (!sdDateTimeHasClock()) sdDateTimeSyncFromNetwork();
+
   resetTransferTracking();
   startHttpServer();
   // Shown as a ready-to-type browser URL, not a bare IP: mDNS names don't

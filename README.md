@@ -403,8 +403,8 @@ Things the PaperS3 makes newly possible, or newly necessary:
   in front of the apps any more, but the device holds both MicroBASIC and the
   CrossPoint reader, selected by `otadata`
   ([docs/DUAL_BOOT.md](docs/DUAL_BOOT.md)). Both directions work from the
-  device itself — the reader's Home menu comes here, the **READER** button
-  goes back — with `editor/boot-slot.sh` left as a host-side fallback.
+  device itself: the reader's Home menu comes here, the **READER** button
+  goes back. `editor/boot-slot.sh` stays as a host-side fallback.
 
 ## License
 

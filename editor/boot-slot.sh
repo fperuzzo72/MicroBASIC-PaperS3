@@ -31,7 +31,11 @@ if [[ -z "${PORT:-}" ]]; then
 fi
 
 run() {
-  PYTHONPATH="$IDF/components/partition_table" "$PY" "$IDF/components/app_update/otatool.py" \
+  # otatool.py imports parttool from components/partition_table, and parttool
+  # in turn locates esptool through a literal '$IDF_PATH' it expands itself --
+  # so both have to be set, not just the import path.
+  PYTHONPATH="$IDF/components/partition_table" IDF_PATH="$IDF" \
+    "$PY" "$IDF/components/app_update/otatool.py" \
     --port "$PORT" --partition-table-file "$HERE/partitions.csv" "$@"
 }
 

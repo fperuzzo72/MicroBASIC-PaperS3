@@ -307,22 +307,34 @@ individually reasonable.
 
 ## Flashing
 
-The dev unit now runs MicroBASIC as the only app on the device, on the
-minimal partition table in `editor/partitions.csv`:
+The dev unit carries **two firmwares at once** — MicroBASIC and the
+CrossPoint reader port — so both can be developed against the same physical
+board without reflashing the layout every time. The table in
+`editor/partitions.csv` is a device-wide contract shared with
+`crosspoint-reader-m5papers3`, not this project's own file; see
+[docs/DUAL_BOOT.md](docs/DUAL_BOOT.md) before changing it.
 
 ```
 nvs       data  nvs      0x9000     32K
 otadata   data  ota      0x11000     8K
-app0      app   test     0x20000     3M   <- MicroBASIC (~1.7MB used)
-coredump  data  coredump 0x320000   64K
+app0      app   ota_0    0x20000   6656K  <- CrossPoint (~5.2MB used)
+app1      app   ota_1    0x6A0000  6656K  <- MicroBASIC (~1.7MB used)
+coredump  data  coredump 0xD20000    64K
+spiffs    data  spiffs   0xD30000  2880K  (reserved; unused)
 ```
 
-Build the app, then write *just* `firmware.bin` at the app offset:
+Build the app, then write *just* `firmware.bin` into MicroBASIC's slot:
 
 ```bash
 esptool.py --chip esp32s3 --port <port> --baud 921600 \
-    write_flash 0x20000 .pio/build/m5papers3/firmware.bin
+    write_flash 0x6A0000 .pio/build/m5papers3/firmware.bin
 ```
+
+Switch which app boots with `editor/boot-slot.sh 0` (CrossPoint) or
+`editor/boot-slot.sh 1` (MicroBASIC) — that only rewrites `otadata`, never an
+app image. **Never `pio run -t upload`**: it also writes the bootloader, the
+partition table, and a `boot_app0.bin` that resets `otadata` to slot 0, so the
+flash lands correctly and then the *other* app boots.
 
 Read the live table first if in any doubt (`esptool read_flash 0x8000
 0xC00` piped through `gen_esp32part.py`) — offsets move whenever the layout
@@ -380,11 +392,12 @@ Things the PaperS3 makes newly possible, or newly necessary:
   turn this board off. `freeink::m5papers3::powerOff()`.
 - **`SCREEN 4` (graphics)** was never built on the X4 for want of RAM. A 1-bit
   960×540 framebuffer is 63KB against 8MB of PSRAM here.
-- **Dual-boot/OTA** was M5Launcher's job on this device, so `OtaBootSwitch`
-  most likely does not come across at all. Now that the device boots
-  straight into MicroBASIC with no launcher, there's no picker in front of
-  it either — reflashing means esptool, or a self-update path this project
-  would have to grow itself.
+- **Dual-boot/OTA** was M5Launcher's job on this device. There is no picker
+  in front of the apps any more, but the device does hold both MicroBASIC and
+  the CrossPoint reader, selected by `otadata`
+  ([docs/DUAL_BOOT.md](docs/DUAL_BOOT.md)) — today over USB, from the host.
+  An on-device MENU entry that switches to the reader and reboots would mean
+  bringing `OtaBootSwitch` across after all.
 
 ## License
 

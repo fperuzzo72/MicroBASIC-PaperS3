@@ -1,15 +1,36 @@
-# Matches what is actually on the dev unit (verified by reading 0x8000 back
-# with gen_esp32part.py). MicroBASIC is the only app: no launcher, no second
-# OTA slot, no SPIFFS -- this firmware keeps its files on the SD card.
+# M5Stack PaperS3 (16MB flash) -- SHARED dual-boot table.
 #
-# nvs is 32K, not the 16K the stock M5 layout used: that one was too small to
-# hold BLE bonds + saved WiFi credentials + the WiFi radio's own PHY
-# calibration blob at the same time, and the calibration write silently
-# failing is what stopped WiFi from associating at all. See
+# This device carries two firmwares at once so more than one project can be
+# developed against the same physical unit without reflashing the layout every
+# time we switch. The table itself is the contract: it is written to the device
+# ONCE, and both projects describe it identically.
+#
+#   app0 / ota_0  CrossPoint reader      (crosspoint-reader-m5papers3/
+#                                         partitions_m5papers3.csv, which MUST
+#                                         stay byte-identical to this file
+#                                         below the comment header)
+#   app1 / ota_1  MicroBASIC             (this repo)
+#
+# The bootloader picks the slot from otadata, so switching apps never touches
+# an app image -- see docs/DUAL_BOOT.md.
+#
+# Slots are symmetric at 6656K rather than sized to today's binaries (this
+# firmware uses ~1.7MB of its 6.5MB): whichever project lands in a slot next
+# should not force a re-partition. CrossPoint needs ~5.2MB, which is what sets
+# the size for both. The offsets are what everything else is pinned to
+# (platformio.ini's offset_address, the flashing recipes in the docs), so treat
+# a change here as a device-wide migration, not an edit.
+#
+# nvs is 32K, not the 16K the stock M5 layout used or the 20K stock CrossPoint
+# uses: those were too small to hold BLE bonds + saved WiFi credentials + the
+# WiFi radio's own PHY calibration blob at the same time, and the calibration
+# write silently failing is what stopped WiFi from associating at all. See
 # docs/DEVELOPMENT_LOG.md's "WiFi never actually connected".
 #
-# Name,    Type, SubType,  Offset,    Size,     Flags
-nvs,       data, nvs,      0x9000,    0x8000,
-otadata,   data, ota,      0x11000,   0x2000,
-app0,      app,  test,     0x20000,   0x300000,
-coredump,  data, coredump, 0x320000,  0x10000,
+# Name,     Type, SubType,  Offset,    Size,      Flags
+nvs,        data, nvs,      0x9000,    0x8000,
+otadata,    data, ota,      0x11000,   0x2000,
+app0,       app,  ota_0,    0x20000,   0x680000,
+app1,       app,  ota_1,    0x6A0000,  0x680000,
+coredump,   data, coredump, 0xD20000,  0x10000,
+spiffs,     data, spiffs,   0xD30000,  0x2D0000,

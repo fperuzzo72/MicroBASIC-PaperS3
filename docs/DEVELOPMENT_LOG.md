@@ -220,6 +220,56 @@ turned out to matter here because one number derived from it (the size
 ceiling) leaked into a place that does matter, and that number is now
 fixed at its source instead.
 
+## Two projects on one device: the shared dual-boot table
+
+**2026-08-25.** The single-app table above was sized to MicroBASIC alone (a
+3MB `app0`), which was enough for this firmware and nothing else. The
+CrossPoint reader port builds to ~5.2MB and simply did not fit, so every
+switch between the two projects would have meant rewriting the layout.
+
+Replaced with one table, written to the device once, that both repos
+describe identically:
+
+```
+nvs       data  nvs      0x9000     32K
+otadata   data  ota      0x11000     8K
+app0      app   ota_0    0x20000   6656K   <- CrossPoint
+app1      app   ota_1    0x6A0000  6656K   <- MicroBASIC
+coredump  data  coredump 0xD20000    64K
+spiffs    data  spiffs   0xD30000  2880K   (reserved, unused)
+```
+
+Both slots are 6656K, not sized to today's binaries. CrossPoint's ~5.2MB sets
+the number and MicroBASIC uses a quarter of its slot, which is the point: the
+next project to land in a slot should not force a re-partition. The
+`app0`/`test` subtype is gone -- both are real OTA slots now, so the
+bootloader's own `otadata` selection picks between them and switching apps
+rewrites 32 bytes rather than 1.7MB.
+
+The drift this log already blamed twice is the thing to watch. There are now
+*five* places holding the same numbers: this table, CrossPoint's
+`partitions_m5papers3.csv`, and `board_upload.offset_address` /
+`maximum_size` in each project's `platformio.ini`. The CSVs must stay
+byte-identical below their comment headers. See `docs/DUAL_BOOT.md`.
+
+Two traps found while wiring it up, both documented there:
+
+* `pio run -t upload` writes four images, not one, and one of them is
+  `boot_app0.bin` at the otadata offset -- which resets the selection to slot
+  0. From this repo that means MicroBASIC flashes correctly into `app1` and
+  then CrossPoint boots, which presents as "the flash didn't take".
+* `esp_ota_get_next_update_partition()` means "the other project's slot" here,
+  so CrossPoint's own SD/OTA self-update would have erased MicroBASIC. Guarded
+  on that side by comparing the target's embedded `esp_app_desc_t.project_name`
+  against the running app's, the same approach `patches/cpr-vcodex/`
+  already takes against the CPR-vCodex fork.
+
+Switching is host-side for now (`editor/boot-slot.sh`, a wrapper over ESP-IDF's
+`otatool.py` so the otadata CRC comes from the vendor's implementation). An
+on-device MENU entry would mean porting `OtaBootSwitch` here, plus the
+`confirmLastOtaSwitch()` fix for the rollback-on-next-reset trap that
+`patches/cpr-vcodex/01_create_otaapps_h.py` describes.
+
 ## The EPD rail was never powered
 
 **Symptom.** Booted on its own, without M5Stack's Launcher having run

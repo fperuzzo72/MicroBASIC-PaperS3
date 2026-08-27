@@ -501,3 +501,96 @@ fixable. Worth checking for on the X4 side too if this ever gets confirmed
 here -- both projects vendor the same upstream `basic.c` under their own
 `patches/tinybasic/`, so a real tokenizer bug would very likely reproduce
 on the X4 as well, not just this port.
+
+## The AltGr layer: written, verified, and deliberately not wired in
+
+There is an `altgr_keys.h` in this project, next to `dead_keys.h`. **Nothing
+calls it.** No `#include`, no call, not one line of code changed for it. It
+sits there available and unused, on purpose, and this is the record of why.
+
+### What it is
+
+The other half of the US-International layout. The dead keys this project
+already had cover the accents; the AltGr layer covers 37 keys that never
+existed here: precomposed letters that need no dead key (AltGr+E gives e-acute
+directly, AltGr+N gives n-tilde, AltGr+comma gives c-cedilla), letters with no
+dead key route at all (eszett, a-ring, ae, o-slash, eth, thorn), currency,
+inverted punctuation, maths, and the spacing accents on the apostrophe key.
+
+`MOD_ALT_RIGHT` has been defined in `config.h` all along. It was simply never
+read.
+
+### Why it is not wired in
+
+In practice there is no AltGr keyboard in use with this firmware, and the
+virtual keyboard has no such key either. Wiring the layer would mean changing
+code at every site that calls `deadKeyProcess()`, with nothing on the other end
+to use it. The header stays, it costs nothing to keep, and the wiring can
+happen the day there is a reason.
+
+### How to wire it, if that day comes
+
+The full walkthrough, with the code block for each site, is in
+`US-International-IME-Android/docs/DEADKEY_TABLE_UPDATE.md`. In short:
+
+1. `#include "altgr_keys.h"` beside `#include "dead_keys.h"`.
+2. At every site that calls `deadKeyProcess()`, a branch **ahead of**
+   `hidToAscii()`. It has to come first because AltGr characters are multi-byte
+   UTF-8 and do not fit the `char` that `hidToAscii()` returns. Those sites
+   already know how to insert a UTF-8 string, because the dead key engine
+   already hands them one.
+3. An AltGr character is a literal, so it resolves a pending accent in front of
+   it. An empty position (AltGr+F) types nothing at all, as on Windows.
+
+This was done once, in full, and then reverted: seven sites across three files:
+`editor/src/terminal_input.cpp` (the screen editor and the program-key ring),
+`editor/src/file_browser.cpp` (the text editor path), and all four X4 sites in
+`editor/port-staging/input_handler.cpp`. Two of those live in translation units
+that cannot see `capsLockOn`, which is a static inside
+`editor/src/input_handler.cpp`, so wiring this needs an `inputCapsLockOn()`
+accessor on `input_handler.h`. The program-key ring also stores **one byte per
+key**, because BASIC strings are byte arrays, so the AltGr layer's three
+non-Latin-1 characters, both curly quotes and the euro sign, would be dropped.
+One place deliberately left alone even then: `handleTitleKey()` in
+`file_browser.cpp` does not go through `deadKeyProcess()` at all, so it has no
+dead key support to be consistent with.
+
+### Two things that were left out alongside it
+
+**Three missing dead key compositions.** Windows defines 56; this project has
+53. Missing are `'y` giving y-acute, `'Y` giving Y-acute, and `"y` giving
+y-diaeresis. Note the asymmetry on the last one: the Windows layout has the
+lowercase and not the uppercase, so `"` then `Y` gives `"Y`, two characters.
+That is the layout, not an oversight. The two-line patch is at
+`US-International-IME-Android/docs/microslate-patch/dead_keys.patch`.
+
+The rest of that audit is worth stating too: **of the 53 compositions the table
+has, all 53 are correct.** Nothing wrong.
+
+**Two dead keys in a row.** `deadKeyProcess()` resolves this through the
+requeue, so `'` `'` `a` produces `'a-acute`. Measured on Windows: it gives
+`''a`. Both dead keys come out as literals and the state is cleared. Measured
+on macOS: `'a-acute`, matching this code. The two systems genuinely differ
+here, because `KBDUSX.DLL` stores no dead+dead entries and the case falls to
+the keyboard driver rather than the layout.
+
+If fidelity to Windows is the goal, this is a behaviour to change, and the code
+is in the document above. It was left out for the same reason as the rest:
+there is no use for it right now.
+
+### Where the specification came from
+
+None of this was transcribed from memory. `KBDUSX.DLL`, the layout Windows
+itself loads for "United States-International", is disassembled into
+`US-International-IME-Android/tools/kbdusx.xml` (from kbdlayout.info), and
+`altgr_keys.h` is **generated** from it by
+`US-International-IME-Android/tools/gen_microslate_patch.py`.
+
+The header was compiled under `-Wall -Wextra -Werror` and passes 15 lookup
+assertions. And all 60 characters of the AltGr layer have glyphs in `EpdFont`:
+checked against the intervals in `scripts/fontconvert.py`, where Latin-1
+Supplement, General Punctuation and Currency Symbols are all already enabled.
+There is nothing to wait for from the font on the day this gets wired in.
+
+What never happened: none of it was compiled as firmware or tested on the
+device.

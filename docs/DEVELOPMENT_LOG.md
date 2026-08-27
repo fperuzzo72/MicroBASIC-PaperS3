@@ -2,7 +2,7 @@
 
 ## The X4 sibling and the shared surface
 
-MicroBASIC-PaperS3 is a port of
+MicroWriter-BASIC-PaperS3 is a port of
 [MicroBASIC](https://github.com/fperuzzo72/MicroBASIC), built for the
 Xteink X4 (800×480 e-ink, no touch). Not a fork — a separate repository,
 with its own history. The X4 is the full version: it started life as a copy

@@ -1,4 +1,4 @@
-// MicroBASIC-PaperS3 -- the firmware's entry point.
+// MicroWriter-BASIC-PaperS3 -- the firmware's entry point, for both machines.
 //
 // Boots straight into the screen editor and BASIC interpreter. On top of that
 // there is a status bar (READER, EDITOR, SYNC, KBD, BLE), each button with a
@@ -65,6 +65,16 @@
 
 #include <cstdio>
 #include <cstring>
+
+// What this machine calls itself, at runtime: the BLE host name a keyboard
+// sees, and the serial banner. Follows the build, so a MicroWriter does not
+// announce itself as MicroBASIC. Bonds are keyed by the peer's address, not by
+// this, so changing it does not cost a paired keyboard.
+#if MICROWRITER
+#define MACHINE_NAME "MicroWriter-PaperS3"
+#else
+#define MACHINE_NAME "MicroBASIC-PaperS3"
+#endif
 
 // --- panel geometry ----------------------------------------------------
 static constexpr int PANEL_W = 960;  // logical, landscape (native panel orientation)
@@ -1106,7 +1116,7 @@ static void forceBlePairingNow() {
   // caller tearing it down), the BLE button is what brings it back rather
   // than a reboot.
   if (!BleHid.isRunning()) {
-    BleHid.begin("MicroBASIC-PaperS3");
+    BleHid.begin(MACHINE_NAME);
     g_bleIdleSinceMs = 0;
     g_bleNextScanAt = 0;
     g_bleScanArmed = false;
@@ -1132,7 +1142,7 @@ void setup() {
   // Calling Serial.print* without begin() is a normal, harmless no-op, so
   // every other STEP()/Serial.printf() call below stays as-is rather than
   // being conditionally compiled out one by one.
-  Serial.println("\n=== MicroBASIC-PaperS3 ===");
+  Serial.println("\n=== " MACHINE_NAME " ===");
   Serial.flush();
 #define STEP(msg) do { Serial.printf("[step] %s\n", msg); Serial.flush(); } while (0)
 
@@ -1200,7 +1210,7 @@ STEP("BleHid.begin");
   // docs/DEVELOPMENT_LOG.md), so the restriction had nothing to do with it.
   // loadBonds() inside begin() means poll() starts reconnecting to a saved
   // bond immediately; bleKbdAutoPair() below drives first-time pairing.
-  BleHid.begin("MicroBASIC-PaperS3");
+  BleHid.begin(MACHINE_NAME);
 
 STEP("sdDateTime");
   // Before anything writes to the card, so no file is created dateless.

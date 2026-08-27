@@ -1,8 +1,15 @@
-# MicroBASIC-PaperS3
+# MicroWriter-BASIC-PaperS3
 
-A port of [MicroBASIC](https://github.com/fperuzzo72/MicroBASIC) — the "new"
-1980s microcomputer that boots straight into a text-screen BASIC — from the
-Xteink X4 to the **M5Stack PaperS3**.
+Two 1980s-style machines for the **M5Stack PaperS3**, built from one source
+tree:
+
+- **MicroBASIC** boots straight into a text-screen BASIC, ported from
+  [MicroBASIC](https://github.com/fperuzzo72/MicroBASIC) on the Xteink X4.
+- **MicroWriter** boots into the file menu and has no interpreter at all: the
+  writing machine MicroBASIC grew out of.
+
+The repo was called `MicroBASIC-PaperS3` while it held only the first of
+them.
 
 The X4 is an ESP32-C3 with 380KB of RAM, a 1-bit 800×480 panel, and a 5-way
 d-pad. The PaperS3 is an ESP32-S3 with 8MB of PSRAM, a 960×540 16-gray panel,

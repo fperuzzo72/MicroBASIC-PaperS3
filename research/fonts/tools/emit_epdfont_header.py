@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Emits EpdFontData C headers for the PaperS3's two SCREEN sizes (see
-MicroBASIC-PaperS3's README, "SCREEN modes"), bypassing fontconvert.py
+the project README, "SCREEN modes"), bypassing fontconvert.py
 entirely (it only accepts FreeType-loadable font files -- TTF/OTF/BDF --
 not raw pixel arrays like the ones this project's own Unscii resizer
 produces).
